@@ -163,7 +163,7 @@ const App = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!isAuthReady || !db || !userId) {
-      showMessage('Error: Not authenticated or Firestore not initialized.', 'error');
+      showMessage('Error: Not authenticated or Firestore not ready.', 'error');
       console.error('Form submission failed: Firestore or auth not ready.');
       return;
     }
@@ -204,7 +204,7 @@ const App = () => {
   // Function to delete a transaction
   const handleDelete = async (id) => {
     if (!isAuthReady || !db || !userId) {
-      showMessage('Error: Not authenticated or Firestore not initialized.', 'error');
+      showMessage('Error: Not authenticated or Firestore not ready.', 'error');
       return;
     }
     try {
