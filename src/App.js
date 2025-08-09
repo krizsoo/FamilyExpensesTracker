@@ -14,10 +14,29 @@ import { getFirestore, collection, addDoc, onSnapshot, query, where, orderBy, de
 import { initializeApp } from 'firebase/app';
 
 // The following variables are provided by the Canvas environment.
-// DO NOT MODIFY them.
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+// For Vercel deployment, we will use environment variables instead.
+// To make the code work both here and on Vercel, we'll check for both.
+const canvasAppId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const canvasFirebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const canvasInitialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+// Use a conditional check to handle different environments.
+const isVercelEnvironment = typeof process !== 'undefined' && process.env;
+
+// Use environment variables for Vercel deployment, fallback to Canvas for this environment.
+const firebaseConfig = {
+  apiKey: isVercelEnvironment ? process.env.REACT_APP_FIREBASE_API_KEY : canvasFirebaseConfig.apiKey,
+  authDomain: isVercelEnvironment ? process.env.REACT_APP_FIREBASE_AUTH_DOMAIN : canvasFirebaseConfig.authDomain,
+  projectId: isVercelEnvironment ? process.env.REACT_APP_FIREBASE_PROJECT_ID : canvasFirebaseConfig.projectId,
+  storageBucket: isVercelEnvironment ? process.env.REACT_APP_FIREBASE_STORAGE_BUCKET : canvasFirebaseConfig.storageBucket,
+  messagingSenderId: isVercelEnvironment ? process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID : canvasFirebaseConfig.messagingSenderId,
+  appId: isVercelEnvironment ? process.env.REACT_APP_FIREBASE_APP_ID : canvasFirebaseConfig.appId,
+};
+
+// Use the app ID and auth token from the canvas for this environment.
+const appId = canvasAppId;
+const initialAuthToken = canvasInitialAuthToken;
+
 
 // The main application component.
 const App = () => {
@@ -56,30 +75,36 @@ const App = () => {
   // Firebase Initialization and Authentication
   useEffect(() => {
     try {
-      const app = initializeApp(firebaseConfig);
-      const firestore = getFirestore(app);
-      const firebaseAuth = getAuth(app);
-      setDb(firestore);
-      setAuth(firebaseAuth);
+      // Check if projectId is available before initializing Firebase
+      if (firebaseConfig.projectId) {
+        const app = initializeApp(firebaseConfig);
+        const firestore = getFirestore(app);
+        const firebaseAuth = getAuth(app);
+        setDb(firestore);
+        setAuth(firebaseAuth);
 
-      const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
-        if (user) {
-          setUserId(user.uid);
-        } else {
-          // Sign in anonymously if no user is found
-          try {
-            if (initialAuthToken) {
-              await signInWithCustomToken(firebaseAuth, initialAuthToken);
-            } else {
-              await signInAnonymously(firebaseAuth);
+        const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
+          if (user) {
+            setUserId(user.uid);
+          } else {
+            // Sign in anonymously if no user is found
+            try {
+              if (initialAuthToken) {
+                await signInWithCustomToken(firebaseAuth, initialAuthToken);
+              } else {
+                await signInAnonymously(firebaseAuth);
+              }
+            } catch (error) {
+              console.error('Firebase authentication failed:', error);
             }
-          } catch (error) {
-            console.error('Firebase authentication failed:', error);
           }
-        }
-        setIsAuthReady(true);
-      });
-      return () => unsubscribe();
+          setIsAuthReady(true);
+        });
+        return () => unsubscribe();
+      } else {
+        console.error('Firebase initialization failed: "projectId" not provided.');
+        setIsAuthReady(false);
+      }
     } catch (error) {
       console.error("Firebase initialization failed:", error);
     }
@@ -241,45 +266,45 @@ const App = () => {
   
   // Calculate the net balance in the selected display currency
   const netBalance = useMemo(() => {
-    if (!transactions || transactions.length === 0) {
-      return 0;
-    }
-    const totalInHUF = transactions.reduce((sum, transaction) => {
-      if (transaction.date.substring(0, 7) === selectedMonth) {
-        return sum + (transaction.type === 'Income' ? transaction.amountInHUF : -transaction.amountInHUF);
+      if (!transactions || transactions.length === 0) {
+        return 0;
       }
-      return sum;
-    }, 0);
-    return convertFromHUF(totalInHUF);
-  }, [transactions, selectedMonth, displayCurrency]);
-  
-  // Calculate total expenses for the selected month in the display currency
-  const totalExpenses = useMemo(() => {
-    if (!transactions || transactions.length === 0) {
-      return 0;
-    }
-    const totalHUF = transactions.reduce((sum, transaction) => {
-      if (transaction.type === 'Expense' && transaction.date.substring(0, 7) === selectedMonth) {
-        return sum + transaction.amountInHUF;
+      const totalInHUF = transactions.reduce((sum, transaction) => {
+        if (transaction.date.substring(0, 7) === selectedMonth) {
+          return sum + (transaction.type === 'Income' ? transaction.amountInHUF : -transaction.amountInHUF);
+        }
+        return sum;
+      }, 0);
+      return convertFromHUF(totalInHUF);
+    }, [transactions, selectedMonth, displayCurrency]);
+    
+    // Calculate total expenses for the selected month in the display currency
+    const totalExpenses = useMemo(() => {
+      if (!transactions || transactions.length === 0) {
+        return 0;
       }
-      return sum;
-    }, 0);
-    return convertFromHUF(totalHUF);
-  }, [transactions, selectedMonth, displayCurrency]);
-
-  // Calculate total income for the selected month in the display currency
-  const totalIncome = useMemo(() => {
-    if (!transactions || transactions.length === 0) {
-      return 0;
-    }
-    const totalHUF = transactions.reduce((sum, transaction) => {
-      if (transaction.type === 'Income' && transaction.date.substring(0, 7) === selectedMonth) {
-        return sum + transaction.amountInHUF;
+      const totalHUF = transactions.reduce((sum, transaction) => {
+        if (transaction.type === 'Expense' && transaction.date.substring(0, 7) === selectedMonth) {
+          return sum + transaction.amountInHUF;
+        }
+        return sum;
+      }, 0);
+      return convertFromHUF(totalHUF);
+    }, [transactions, selectedMonth, displayCurrency]);
+    
+    // Calculate total income for the selected month in the display currency
+    const totalIncome = useMemo(() => {
+      if (!transactions || transactions.length === 0) {
+        return 0;
       }
-      return sum;
-    }, 0);
-    return convertFromHUF(totalHUF);
-  }, [transactions, selectedMonth, displayCurrency]);
+      const totalHUF = transactions.reduce((sum, transaction) => {
+        if (transaction.type === 'Income' && transaction.date.substring(0, 7) === selectedMonth) {
+          return sum + transaction.amountInHUF;
+        }
+        return sum;
+      }, 0);
+      return convertFromHUF(totalHUF);
+    }, [transactions, selectedMonth, displayCurrency]);
 
   return (
     <div className="min-h-screen bg-gray-100 p-4 font-sans text-gray-800">
