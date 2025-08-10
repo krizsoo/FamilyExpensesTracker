@@ -33,6 +33,7 @@ const Toast = ({ message, type, onClose }) => (<div className={`fixed top-5 righ
 const ConfirmationModal = ({ message, onConfirm, onCancel }) => (<div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50"><div className="bg-white rounded-lg p-8 shadow-2xl w-11/12 md:w-1/3"><h3 className="text-lg font-bold mb-4">Confirm Action</h3><p className="mb-6">{message}</p><div className="flex justify-end space-x-4"><button onClick={onCancel} className="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded transition">Cancel</button><button onClick={onConfirm} className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded transition">Delete</button></div></div></div>);
 const TrashIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>);
 const PencilIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.5L15.232 5.232z" /></svg>);
+const SortIcon = ({ direction }) => direction ? (direction === 'asc' ? ' ▲' : ' ▼') : null;
 
 // --- Main App Component ---
 export default function App() {
@@ -138,7 +139,7 @@ function FinanceTracker({ user, onSignOut }) {
     const [page, setPage] = useState('dashboard');
     const [allTransactions, setAllTransactions] = useState([]);
     const [recurringExpenses, setRecurringExpenses] = useState([]);
-    const [displayCurrency, setDisplayCurrency] = useState('USD');
+    const [displayCurrency, setDisplayCurrency] = useState(localStorage.getItem('lastReportCurrency') || 'USD');
     const [selectedMonths, setSelectedMonths] = useState([]);
     const [selectedCategories, setSelectedCategories] = useState([]);
     const [latestRates, setLatestRates] = useState(null);
@@ -148,10 +149,16 @@ function FinanceTracker({ user, onSignOut }) {
     const [editingTransaction, setEditingTransaction] = useState(null);
     const [currentPage, setCurrentPage] = useState(1);
     const [initialMonthSet, setInitialMonthSet] = useState(false);
+    const [isMenuOpen, setIsMenuOpen] = useState(false);
+    const [sortConfig, setSortConfig] = useState({ key: 'transactionDate', direction: 'desc' });
 
     useEffect(() => {
         setDb(getFirestore(initializeApp(firebaseConfig)));
     }, []);
+    
+    useEffect(() => {
+        localStorage.setItem('lastReportCurrency', displayCurrency);
+    }, [displayCurrency]);
 
     const showToast = (message, type = 'success') => {
         setToast({ show: true, message, type });
@@ -227,7 +234,7 @@ function FinanceTracker({ user, onSignOut }) {
     }, [availableMonths, initialMonthSet]);
 
     const filteredTransactions = useMemo(() => {
-        let transactions = allTransactions;
+        let transactions = [...allTransactions]; // Create a mutable copy
 
         if (selectedMonths.length > 0) {
             transactions = transactions.filter(t => selectedMonths.includes(getYearMonthLocal(t.transactionDate)));
@@ -236,9 +243,31 @@ function FinanceTracker({ user, onSignOut }) {
         if (selectedCategories.length > 0) {
             transactions = transactions.filter(t => selectedCategories.includes(t.category));
         }
+        
+        // Sorting logic
+        transactions.sort((a, b) => {
+            let aValue = a[sortConfig.key];
+            let bValue = b[sortConfig.key];
+
+            if(sortConfig.key === 'amountInBaseCurrency') {
+                 if (a.originalCurrency === displayCurrency) aValue = a.originalAmount;
+                 else aValue = a.amountInBaseCurrency * (latestRates ? latestRates[displayCurrency] || 1 : 1);
+                 
+                 if (b.originalCurrency === displayCurrency) bValue = b.originalAmount;
+                 else bValue = b.amountInBaseCurrency * (latestRates ? latestRates[displayCurrency] || 1 : 1);
+            }
+
+            if (aValue < bValue) {
+                return sortConfig.direction === 'asc' ? -1 : 1;
+            }
+            if (aValue > bValue) {
+                return sortConfig.direction === 'asc' ? 1 : -1;
+            }
+            return 0;
+        });
 
         return transactions;
-    }, [allTransactions, selectedMonths, selectedCategories]);
+    }, [allTransactions, selectedMonths, selectedCategories, sortConfig, displayCurrency, latestRates]);
     
     const paginatedTransactions = useMemo(() => {
         const startIndex = (currentPage - 1) * TRANSACTIONS_PER_PAGE;
@@ -309,6 +338,52 @@ function FinanceTracker({ user, onSignOut }) {
         } catch(e) { showToast(`Failed to add: ${e.message}`, 'error'); }
         finally { setIsLoading(false); }
     }, [db]);
+    
+    const handlePostRecurring = useCallback(async () => {
+        if (!db || !latestRates) { showToast("Data not ready", "error"); return; }
+        
+        const currentMonthStr = new Date().toISOString().slice(0, 7);
+        const currentMonthTransactions = allTransactions.filter(t => getYearMonthLocal(t.transactionDate) === currentMonthStr);
+        
+        const toAdd = recurringExpenses.filter(recurring => 
+            !currentMonthTransactions.some(t => t.description === recurring.description)
+        );
+
+        if (toAdd.length === 0) {
+            showToast("All recurring expenses for this month are already added.", "success");
+            return;
+        }
+
+        setIsLoading(true);
+        try {
+            const batch = writeBatch(db);
+            const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
+            
+            toAdd.forEach(item => {
+                const { originalAmount, originalCurrency } = item;
+                const rate = latestRates[originalCurrency] || 1;
+                const amountInBase = originalAmount / rate;
+                const newTransaction = {
+                    ...item,
+                    originalAmount: parseFloat(originalAmount),
+                    transactionDate: Timestamp.now(),
+                    baseCurrency: 'USD',
+                    exchangeRateToBase: rate,
+                    amountInBaseCurrency: parseFloat(amountInBase),
+                    createdAt: Timestamp.now(),
+                };
+                const docRef = doc(collection(db, collectionPath));
+                batch.set(docRef, newTransaction);
+            });
+
+            await batch.commit();
+            showToast(`Added ${toAdd.length} recurring expense(s).`);
+        } catch (e) {
+            showToast(`Failed to add recurring items: ${e.message}`, 'error');
+        } finally {
+            setIsLoading(false);
+        }
+    }, [db, latestRates, allTransactions, recurringExpenses]);
 
     const reportData = useMemo(() => {
         if (!latestRates) return { totalExpense: 0, totalIncome: 0, netBalance: 0, expenseChartData: [], trendChartData: [] };
@@ -350,14 +425,31 @@ function FinanceTracker({ user, onSignOut }) {
                 <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
                     <div className="flex items-center space-x-4">
                          <h1 className="text-3xl font-bold text-blue-600">Family Finance</h1>
-                         <nav className="flex space-x-2 rounded-lg bg-gray-200 p-1">
+                         <nav className="hidden md:flex space-x-2 rounded-lg bg-gray-200 p-1">
                             <button onClick={() => setPage('dashboard')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'dashboard' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Dashboard</button>
                             <button onClick={() => setPage('recurring')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'recurring' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Recurring</button>
                             <button onClick={() => setPage('import')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'import' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Import</button>
                          </nav>
                     </div>
-                    <button onClick={onSignOut} className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-md transition">Sign Out</button>
+                    <div className="hidden md:block">
+                        <button onClick={onSignOut} className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-md transition">Sign Out</button>
+                    </div>
+                    <div className="md:hidden">
+                        <button onClick={() => setIsMenuOpen(!isMenuOpen)} className="text-gray-600">
+                             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                        </button>
+                    </div>
                 </div>
+                {isMenuOpen && (
+                    <div className="md:hidden bg-white border-t">
+                        <nav className="flex flex-col p-4 space-y-2">
+                            <button onClick={() => { setPage('dashboard'); setIsMenuOpen(false); }} className="text-left p-2 rounded-md hover:bg-gray-100">Dashboard</button>
+                            <button onClick={() => { setPage('recurring'); setIsMenuOpen(false); }} className="text-left p-2 rounded-md hover:bg-gray-100">Recurring</button>
+                            <button onClick={() => { setPage('import'); setIsMenuOpen(false); }} className="text-left p-2 rounded-md hover:bg-gray-100">Import</button>
+                            <button onClick={onSignOut} className="text-left p-2 rounded-md text-red-600 hover:bg-red-50">Sign Out</button>
+                        </nav>
+                    </div>
+                )}
             </header>
 
             <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -372,12 +464,12 @@ function FinanceTracker({ user, onSignOut }) {
                             <CategoryFilter selectedCategories={selectedCategories} onSelectionChange={setSelectedCategories} />
                             <CategoryChart data={reportData.expenseChartData} currency={displayCurrency} />
                             <TrendChartComponent data={reportData.trendChartData} currency={displayCurrency} />
-                            <TransactionList transactions={paginatedTransactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} onNextPage={() => setCurrentPage(p => Math.min(p + 1, totalPages))} onPrevPage={() => setCurrentPage(p => Math.max(p - 1, 1))} currentPage={currentPage} totalPages={totalPages} />
+                            <TransactionList transactions={paginatedTransactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} onNextPage={() => setCurrentPage(p => Math.min(p + 1, totalPages))} onPrevPage={() => setCurrentPage(p => Math.max(p - 1, 1))} currentPage={currentPage} totalPages={totalPages} sortConfig={sortConfig} setSortConfig={setSortConfig} />
                         </div>
                     </div>
                 )}
                 {page === 'recurring' && (
-                    <RecurringPage expenses={recurringExpenses} onAdd={addRecurringExpense} onDelete={(id) => requestDelete(id, 'recurring')} />
+                    <RecurringPage expenses={recurringExpenses} onAdd={addRecurringExpense} onDelete={(id) => requestDelete(id, 'recurring')} onPostRecurring={handlePostRecurring} />
                 )}
                 {page === 'import' && (
                     <ImportPage db={db} showToast={showToast} />
@@ -640,7 +732,7 @@ function ImportPage({ db, showToast }) {
     );
 }
 
-function RecurringPage({ expenses, onAdd, onDelete }) {
+function RecurringPage({ expenses, onAdd, onDelete, onPostRecurring }) {
     return (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             <div className="md:col-span-1">
@@ -648,7 +740,10 @@ function RecurringPage({ expenses, onAdd, onDelete }) {
             </div>
             <div className="md:col-span-2">
                 <div className="bg-white p-6 rounded-lg shadow-md">
-                    <h2 className="text-2xl font-bold mb-4">Recurring Monthly Expenses</h2>
+                    <div className="flex justify-between items-center mb-4">
+                        <h2 className="text-2xl font-bold">Recurring Monthly Expenses</h2>
+                        <button onClick={onPostRecurring} className="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-md transition">Add for this Month</button>
+                    </div>
                     <div className="space-y-3">
                         {expenses.length === 0 && <p className="text-center text-gray-500 py-8">No recurring expenses defined yet.</p>}
                         {expenses.map(exp => (
@@ -659,7 +754,7 @@ function RecurringPage({ expenses, onAdd, onDelete }) {
                                 </div>
                                 <div className="flex items-center space-x-4">
                                      <p className="font-mono text-red-500">{CURRENCY_SYMBOLS[exp.originalCurrency] || ''}{exp.originalAmount.toLocaleString()}</p>
-                                     <button onClick={() => onDelete(exp.id)} className="text-gray-400 hover:text-red-600"><TrashIcon /></button>
+                                     <button onClick={() => onDelete(exp.id, 'recurring')} className="text-gray-400 hover:text-red-600"><TrashIcon /></button>
                                 </div>
                             </div>
                         ))}
@@ -950,10 +1045,18 @@ function TrendChartComponent({ data, currency }) {
 }
 
 
-function TransactionList({ transactions, onDelete, onEdit, displayCurrency, latestRates, onNextPage, onPrevPage, currentPage, totalPages }) {
+function TransactionList({ transactions, onDelete, onEdit, displayCurrency, latestRates, onNextPage, onPrevPage, currentPage, totalPages, sortConfig, setSortConfig }) {
     const conversionRate = latestRates ? latestRates[displayCurrency] || 1 : 1;
     const formatCurrency = (value) => `${CURRENCY_SYMBOLS[displayCurrency] || ''}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     
+    const requestSort = (key) => {
+        let direction = 'asc';
+        if (sortConfig.key === key && sortConfig.direction === 'asc') {
+            direction = 'desc';
+        }
+        setSortConfig({ key, direction });
+    };
+
     return (
         <div className="bg-white p-6 rounded-lg shadow-md">
             <h2 className="text-2xl font-bold mb-4">Transaction History</h2>
@@ -961,10 +1064,10 @@ function TransactionList({ transactions, onDelete, onEdit, displayCurrency, late
                 <table className="w-full text-sm text-left text-gray-500">
                     <thead className="text-xs text-gray-700 uppercase bg-gray-50">
                         <tr>
-                            <th scope="col" className="px-4 py-3">Date</th>
+                            <th scope="col" className="px-4 py-3 cursor-pointer" onClick={() => requestSort('transactionDate')}>Date<SortIcon direction={sortConfig.key === 'transactionDate' ? sortConfig.direction : null} /></th>
                             <th scope="col" className="px-4 py-3">Description</th>
-                            <th scope="col" className="px-4 py-3">Category</th>
-                            <th scope="col" className="px-4 py-3 text-right">Amount ({displayCurrency})</th>
+                            <th scope="col" className="px-4 py-3 cursor-pointer" onClick={() => requestSort('category')}>Category<SortIcon direction={sortConfig.key === 'category' ? sortConfig.direction : null} /></th>
+                            <th scope="col" className="px-4 py-3 text-right cursor-pointer" onClick={() => requestSort('amountInBaseCurrency')}>Amount ({displayCurrency})<SortIcon direction={sortConfig.key === 'amountInBaseCurrency' ? sortConfig.direction : null} /></th>
                             <th scope="col" className="px-4 py-3"></th>
                         </tr>
                     </thead>
