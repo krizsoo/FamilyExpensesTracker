@@ -382,39 +382,33 @@ function FinanceTracker({ user, onSignOut }) {
 // --- Child Components ---
 
 function MonthFilter({ availableMonths, selectedMonths, onSelectionChange }) {
-    const handleMonthClick = (month) => {
-        if (month === 'All') {
+    const handleMonthChange = (e) => {
+        const selectedOptions = Array.from(e.target.selectedOptions, option => option.value);
+        if (selectedOptions.includes("All")) {
             onSelectionChange([]);
-            return;
+        } else {
+            onSelectionChange(selectedOptions);
         }
-        const newSelection = selectedMonths.includes(month)
-            ? selectedMonths.filter(m => m !== month)
-            : [...selectedMonths, month];
-        onSelectionChange(newSelection);
     };
 
     return (
         <div className="bg-white p-4 rounded-lg shadow-md">
-            <div className="flex justify-between items-center mb-3">
-                 <h3 className="text-lg font-bold">Filter by Month</h3>
-                 <button
-                    onClick={() => handleMonthClick('All')}
-                    className={`px-3 py-1 text-sm rounded-full transition ${selectedMonths.length === 0 ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
-                >
-                    All Months
-                </button>
-            </div>
-            <div className="flex flex-wrap gap-2">
+            <h3 className="text-lg font-bold mb-2">Filter by Month</h3>
+            <p className="text-sm text-gray-500 mb-3">Hold Ctrl (or Cmd on Mac) to select multiple months.</p>
+            <select
+                multiple
+                value={selectedMonths}
+                onChange={handleMonthChange}
+                className="w-full p-2 border border-gray-300 rounded-md"
+                size="6" 
+            >
+                <option value="All">All Months</option>
                 {availableMonths.map(month => (
-                    <button
-                        key={month}
-                        onClick={() => handleMonthClick(month)}
-                        className={`px-3 py-1 text-sm rounded-full transition ${selectedMonths.includes(month) ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
-                    >
+                    <option key={month} value={month}>
                         {new Date(month + '-02').toLocaleString('default', { month: 'long', year: 'numeric' })}
-                    </button>
+                    </option>
                 ))}
-            </div>
+            </select>
         </div>
     );
 }
