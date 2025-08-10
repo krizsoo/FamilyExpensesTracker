@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, updateDoc, Timestamp, orderBy, limit, startAfter, getDocs, endBefore, limitToLast, writeBatch } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, updateDoc, Timestamp, orderBy, limit, startAfter, getDocs, endBefore, limitToLast, writeBatch, where } from 'firebase/firestore';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 
 // --- Firebase Configuration ---
@@ -144,7 +144,8 @@ function FinanceTracker({ user, onSignOut }) {
     const [currentPage, setCurrentPage] = useState(1);
     const [recurringExpenses, setRecurringExpenses] = useState([]);
     const [displayCurrency, setDisplayCurrency] = useState('USD');
-    const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7)); // e.g., "2025-08"
+    const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7));
+    const [selectedCategories, setSelectedCategories] = useState([]);
     const [latestRates, setLatestRates] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
     const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
@@ -161,96 +162,89 @@ function FinanceTracker({ user, onSignOut }) {
     };
 
     // --- Data Fetching Logic ---
-    const fetchFirstPage = useCallback(async () => {
+    const fetchPaginatedTransactions = useCallback(async (direction = 'initial', cursor = null) => {
         if (!db) return;
         setIsLoading(true);
         try {
             const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
-            const q = query(collection(db, collectionPath), orderBy("transactionDate", "desc"), limit(TRANSACTIONS_PER_PAGE));
+            const constraints = [];
+            
+            // Month filter
+            const year = parseInt(selectedMonth.split('-')[0]);
+            const month = parseInt(selectedMonth.split('-')[1]);
+            const startDate = new Date(year, month - 1, 1);
+            const endDate = new Date(year, month, 0, 23, 59, 59);
+            constraints.push(where("transactionDate", ">=", Timestamp.fromDate(startDate)));
+            constraints.push(where("transactionDate", "<=", Timestamp.fromDate(endDate)));
+
+            // Category filter
+            if (selectedCategories.length > 0) {
+                constraints.push(where('category', 'in', selectedCategories));
+            }
+
+            constraints.push(orderBy("transactionDate", "desc"));
+
+            if (direction === 'next' && cursor) {
+                constraints.push(startAfter(cursor));
+            } else if (direction === 'prev' && cursor) {
+                constraints.push(endBefore(cursor));
+                constraints.push(limitToLast(TRANSACTIONS_PER_PAGE));
+            } else {
+                constraints.push(limit(TRANSACTIONS_PER_PAGE));
+            }
+            
+            const q = query(collection(db, collectionPath), ...constraints);
             const documentSnapshots = await getDocs(q);
             const newTransactions = documentSnapshots.docs.map(doc => ({ id: doc.id, ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
+            
+            if (newTransactions.length > 0) {
+                setPaginatedTransactions(newTransactions);
+                setFirstVisible(documentSnapshots.docs[0]);
+                setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
+                
+                const nextCheckConstraints = [...constraints.slice(0, -1), startAfter(documentSnapshots.docs[documentSnapshots.docs.length - 1]), limit(1)];
+                const nextQuery = query(collection(db, collectionPath), ...nextCheckConstraints);
+                const nextDocs = await getDocs(nextQuery);
+                setIsLastPage(nextDocs.empty);
+            } else {
+                 setPaginatedTransactions([]);
+                 setIsLastPage(true);
+            }
+            if(direction === 'initial') setCurrentPage(1);
 
-            setPaginatedTransactions(newTransactions);
-            setFirstVisible(documentSnapshots.docs[0]);
-            setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
-            setCurrentPage(1);
-
-            const nextQuery = query(collection(db, collectionPath), orderBy("transactionDate", "desc"), startAfter(documentSnapshots.docs[documentSnapshots.docs.length - 1]), limit(1));
-            const nextDocs = await getDocs(nextQuery);
-            setIsLastPage(nextDocs.empty);
         } catch (error) {
-            console.error("Error fetching first page:", error);
+            console.error("Error fetching transactions:", error);
             showToast("Could not load transactions.", "error");
         } finally {
             setIsLoading(false);
         }
-    }, [db]);
+    }, [db, selectedMonth, selectedCategories]);
 
-    const fetchNextPage = async () => {
-        if (!db || !lastVisible) return;
-        setIsLoading(true);
-        try {
-            const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
-            const q = query(collection(db, collectionPath), orderBy("transactionDate", "desc"), startAfter(lastVisible), limit(TRANSACTIONS_PER_PAGE));
-            const documentSnapshots = await getDocs(q);
-            const newTransactions = documentSnapshots.docs.map(doc => ({ id: doc.id, ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
-            
-            if (newTransactions.length > 0) {
-                setPaginatedTransactions(newTransactions);
-                setFirstVisible(documentSnapshots.docs[0]);
-                setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
-                setCurrentPage(p => p + 1);
-
-                const nextQuery = query(collection(db, collectionPath), orderBy("transactionDate", "desc"), startAfter(documentSnapshots.docs[documentSnapshots.docs.length - 1]), limit(1));
-                const nextDocs = await getDocs(nextQuery);
-                setIsLastPage(nextDocs.empty);
-            } else {
-                setIsLastPage(true);
-                showToast("No more transactions.", "success");
-            }
-        } catch (error) {
-            console.error("Error fetching next page:", error);
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    const fetchPrevPage = async () => {
-        if (!db || !firstVisible) return;
-        setIsLoading(true);
-        try {
-            const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
-            const q = query(collection(db, collectionPath), orderBy("transactionDate", "desc"), endBefore(firstVisible), limitToLast(TRANSACTIONS_PER_PAGE));
-            const documentSnapshots = await getDocs(q);
-            const newTransactions = documentSnapshots.docs.map(doc => ({ id: doc.id, ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
-            
-            if (newTransactions.length > 0) {
-                setPaginatedTransactions(newTransactions);
-                setFirstVisible(documentSnapshots.docs[0]);
-                setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
-                setCurrentPage(p => p - 1);
-                setIsLastPage(false);
-            }
-        } catch (error) {
-            console.error("Error fetching previous page:", error);
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    // Initial fetch and listeners
     useEffect(() => {
         if (db) {
-            fetchFirstPage();
+            fetchPaginatedTransactions('initial');
+        }
+    }, [db, selectedMonth, selectedCategories, fetchPaginatedTransactions]);
 
-            // Listener for ALL transactions for summary
+    const handleNextPage = () => {
+        setCurrentPage(p => p + 1);
+        fetchPaginatedTransactions('next', lastVisible);
+    };
+
+    const handlePrevPage = () => {
+        setCurrentPage(p => p - 1);
+        fetchPaginatedTransactions('prev', firstVisible);
+    };
+
+    // Listeners for summary and recurring
+    useEffect(() => {
+        if (db) {
             const summaryQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/transactions`));
             const unsubscribeSummary = onSnapshot(summaryQuery, (snapshot) => {
                 const data = snapshot.docs.map(doc => ({ ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
                 setAllTransactions(data);
             });
 
-            // Listener for recurring expenses
             const recurringQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/recurring`), orderBy("createdAt", "desc"));
             const unsubscribeRecurring = onSnapshot(recurringQuery, (snapshot) => {
                 const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -262,7 +256,7 @@ function FinanceTracker({ user, onSignOut }) {
                 unsubscribeRecurring();
             };
         }
-    }, [db, fetchFirstPage]);
+    }, [db]);
 
     useEffect(() => {
         const manageRateCache = async () => {
@@ -303,9 +297,9 @@ function FinanceTracker({ user, onSignOut }) {
             const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
             await addDoc(collection(db, collectionPath), { ...data, originalAmount: parseFloat(originalAmount), transactionDate: Timestamp.fromDate(new Date(data.transactionDate)), baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase), createdAt: Timestamp.now() });
             showToast(`${data.type} added successfully!`);
-            fetchFirstPage();
+            fetchPaginatedTransactions('initial');
         } catch (e) { showToast(`Failed to add transaction: ${e.message}`, 'error'); } finally { setIsLoading(false); }
-    }, [db, latestRates, fetchFirstPage]);
+    }, [db, latestRates, fetchPaginatedTransactions]);
 
     const updateTransaction = useCallback(async (updatedData) => {
         if (!db || !editingTransaction || !latestRates) { showToast("Data not ready, please try again.", "error"); return; }
@@ -319,9 +313,9 @@ function FinanceTracker({ user, onSignOut }) {
             await updateDoc(docRef, payload);
             showToast("Transaction updated!");
             setEditingTransaction(null);
-            fetchFirstPage();
+            fetchPaginatedTransactions('initial');
         } catch (e) { showToast(`Update failed: ${e.message}`, 'error'); } finally { setIsLoading(false); }
-    }, [db, editingTransaction, latestRates, fetchFirstPage]);
+    }, [db, editingTransaction, latestRates, fetchPaginatedTransactions]);
 
     const requestDelete = (id, type) => setShowConfirmModal({ show: true, id, type });
     
@@ -335,7 +329,7 @@ function FinanceTracker({ user, onSignOut }) {
         try {
             await deleteDoc(doc(db, `artifacts/${appId}/families/${familyId}/${collectionName}`, idToDelete));
             showToast(`${type.charAt(0).toUpperCase() + type.slice(1)} deleted.`);
-            if(type === 'transaction') fetchFirstPage();
+            if(type === 'transaction') fetchPaginatedTransactions('initial');
         } catch (e) { showToast(`Failed to delete: ${e.message}`, 'error'); } 
         finally { 
             setIsLoading(false); 
@@ -357,17 +351,20 @@ function FinanceTracker({ user, onSignOut }) {
     const summaryData = useMemo(() => {
         if (!latestRates) return { totalExpense: 0, totalIncome: 0, netBalance: 0, expenseChartData: [] };
         
-        const filteredTransactions = allTransactions.filter(t => t.transactionDate.toISOString().slice(0, 7) === selectedMonth);
+        let filteredForSummary = allTransactions.filter(t => t.transactionDate.toISOString().slice(0, 7) === selectedMonth);
+        if (selectedCategories.length > 0) {
+            filteredForSummary = filteredForSummary.filter(t => selectedCategories.includes(t.category));
+        }
 
         const conversionRate = latestRates[displayCurrency] || 1;
-        const expenses = filteredTransactions.filter(t => t.type === 'Expense');
-        const income = filteredTransactions.filter(t => t.type === 'Income');
+        const expenses = filteredForSummary.filter(t => t.type === 'Expense');
+        const income = filteredForSummary.filter(t => t.type === 'Income');
         const totalExpense = expenses.reduce((acc, t) => acc + t.amountInBaseCurrency, 0) * conversionRate;
         const totalIncome = income.reduce((acc, t) => acc + t.amountInBaseCurrency, 0) * conversionRate;
         const expenseByCategory = expenses.reduce((acc, t) => { acc[t.category] = (acc[t.category] || 0) + (t.amountInBaseCurrency * conversionRate); return acc; }, {});
         const expenseChartData = Object.entries(expenseByCategory).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
         return { totalExpense, totalIncome, netBalance: totalIncome - totalExpense, expenseChartData };
-    }, [allTransactions, displayCurrency, latestRates, selectedMonth]);
+    }, [allTransactions, displayCurrency, latestRates, selectedMonth, selectedCategories]);
 
     return (
         <div className="bg-gray-100 min-h-screen font-sans text-gray-800">
@@ -394,7 +391,7 @@ function FinanceTracker({ user, onSignOut }) {
                 {page === 'dashboard' && (
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                         <div className="lg:col-span-1 space-y-8"><TransactionForm onSubmit={addTransaction} /><SummaryReport summary={summaryData} currency={displayCurrency} onCurrencyChange={setDisplayCurrency} selectedMonth={selectedMonth} onMonthChange={setSelectedMonth} /></div>
-                        <div className="lg:col-span-2 space-y-8"><CategoryChart data={summaryData.expenseChartData} currency={displayCurrency} /><TransactionList transactions={paginatedTransactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} onNextPage={fetchNextPage} onPrevPage={fetchPrevPage} currentPage={currentPage} isLastPage={isLastPage} /></div>
+                        <div className="lg:col-span-2 space-y-8"><CategoryFilter selectedCategories={selectedCategories} onSelectionChange={setSelectedCategories} /><CategoryChart data={summaryData.expenseChartData} currency={displayCurrency} /><TransactionList transactions={paginatedTransactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} onNextPage={handleNextPage} onPrevPage={handlePrevPage} currentPage={currentPage} isLastPage={isLastPage} /></div>
                     </div>
                 )}
                 {page === 'recurring' && (
@@ -409,6 +406,42 @@ function FinanceTracker({ user, onSignOut }) {
 }
 
 // --- Child Components ---
+
+function CategoryFilter({ selectedCategories, onSelectionChange }) {
+    const handleCategoryClick = (category) => {
+        if (category === 'All') {
+            onSelectionChange([]);
+            return;
+        }
+        const newSelection = selectedCategories.includes(category)
+            ? selectedCategories.filter(c => c !== category)
+            : [...selectedCategories, category];
+        onSelectionChange(newSelection);
+    };
+
+    return (
+        <div className="bg-white p-4 rounded-lg shadow-md">
+            <h3 className="text-lg font-bold mb-3">Filter by Category</h3>
+            <div className="flex flex-wrap gap-2">
+                <button
+                    onClick={() => handleCategoryClick('All')}
+                    className={`px-3 py-1 text-sm rounded-full transition ${selectedCategories.length === 0 ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                >
+                    All
+                </button>
+                {EXPENSE_CATEGORIES.map(category => (
+                    <button
+                        key={category}
+                        onClick={() => handleCategoryClick(category)}
+                        className={`px-3 py-1 text-sm rounded-full transition ${selectedCategories.includes(category) ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                    >
+                        {category}
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+}
 
 function ImportPage({ db, showToast }) {
     const [file, setFile] = useState(null);
@@ -650,7 +683,7 @@ function RecurringExpenseForm({ onSubmit }) {
 function TransactionForm({ onSubmit }) {
     const [type, setType] = useState('Expense');
     const [amount, setAmount] = useState('');
-    const [currency, setCurrency] = useState('USD');
+    const [currency, setCurrency] = useState(localStorage.getItem('lastUsedCurrency') || 'USD');
     const [category, setCategory] = useState(EXPENSE_CATEGORIES[0]);
     const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
     const [description, setDescription] = useState('');
@@ -659,6 +692,12 @@ function TransactionForm({ onSubmit }) {
     useEffect(() => {
         setCategory(type === 'Expense' ? EXPENSE_CATEGORIES[0] : INCOME_CATEGORIES[0]);
     }, [type]);
+
+    const handleCurrencyChange = (e) => {
+        const newCurrency = e.target.value;
+        setCurrency(newCurrency);
+        localStorage.setItem('lastUsedCurrency', newCurrency);
+    };
 
     const handleSubmit = (e) => {
         e.preventDefault();
@@ -684,7 +723,7 @@ function TransactionForm({ onSubmit }) {
                     </div>
                     <div>
                         <label htmlFor="currency" className="block text-sm font-medium text-gray-700">Currency</label>
-                        <select id="currency" value={currency} onChange={e => setCurrency(e.target.value)} className="mt-1 block w-full px-3 py-2 border-gray-300 rounded-md shadow-sm">
+                        <select id="currency" value={currency} onChange={handleCurrencyChange} className="mt-1 block w-full px-3 py-2 border-gray-300 rounded-md shadow-sm">
                             <option>USD</option> <option>EUR</option> <option>GBP</option> <option>HUF</option>
                         </select>
                     </div>
@@ -873,7 +912,7 @@ function TransactionList({ transactions, onDelete, onEdit, displayCurrency, late
                         })}
                     </tbody>
                 </table>
-                {transactions.length === 0 && <p className="text-center text-gray-500 py-8">No transactions recorded yet.</p>}
+                {transactions.length === 0 && <p className="text-center text-gray-500 py-8">No transactions for the selected filters.</p>}
             </div>
              <div className="flex justify-between items-center mt-4">
                 <button onClick={onPrevPage} disabled={currentPage === 1} className="px-4 py-2 bg-gray-300 text-gray-800 rounded-md disabled:opacity-50 disabled:cursor-not-allowed">Previous</button>
