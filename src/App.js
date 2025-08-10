@@ -147,6 +147,7 @@ function FinanceTracker({ user, onSignOut }) {
     const [showConfirmModal, setShowConfirmModal] = useState({ show: false, id: null, type: '' });
     const [editingTransaction, setEditingTransaction] = useState(null);
     const [currentPage, setCurrentPage] = useState(1);
+    const [initialMonthSet, setInitialMonthSet] = useState(false);
 
     useEffect(() => {
         setDb(getFirestore(initializeApp(firebaseConfig)));
@@ -213,16 +214,23 @@ function FinanceTracker({ user, onSignOut }) {
     }, [allTransactions]);
 
     useEffect(() => {
-        if (availableMonths.length > 0 && selectedMonths.length === 0) {
+        if (availableMonths.length > 0 && !initialMonthSet) {
             setSelectedMonths([availableMonths[0]]);
+            setInitialMonthSet(true);
         }
-    }, [availableMonths, selectedMonths]);
+    }, [availableMonths, initialMonthSet]);
+
+    const getYearMonthLocal = (date) => {
+        const year = date.getFullYear();
+        const month = ('0' + (date.getMonth() + 1)).slice(-2);
+        return `${year}-${month}`;
+    };
 
     const filteredTransactions = useMemo(() => {
         let transactions = allTransactions;
 
         if (selectedMonths.length > 0) {
-            transactions = transactions.filter(t => selectedMonths.includes(t.transactionDate.toISOString().slice(0, 7)));
+            transactions = transactions.filter(t => selectedMonths.includes(getYearMonthLocal(t.transactionDate)));
         }
 
         if (selectedCategories.length > 0) {
@@ -314,7 +322,7 @@ function FinanceTracker({ user, onSignOut }) {
         const expenseChartData = Object.entries(expenseByCategory).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
         
         const monthlyData = filteredTransactions.reduce((acc, t) => {
-            const month = t.transactionDate.toISOString().slice(0, 7); // YYYY-MM
+            const month = getYearMonthLocal(t.transactionDate); // YYYY-MM
             if (!acc[month]) {
                 acc[month] = { month, expense: 0, income: 0 };
             }
@@ -356,7 +364,7 @@ function FinanceTracker({ user, onSignOut }) {
                 {page === 'dashboard' && (
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                         <div className="lg:col-span-1 space-y-8">
-                            <TransactionForm onSubmit={addTransaction} />
+                            <TransactionForm onSubmit={addTransaction} allTransactions={allTransactions} />
                             <SummaryReport summary={reportData} currency={displayCurrency} onCurrencyChange={setDisplayCurrency} />
                         </div>
                         <div className="lg:col-span-2 space-y-8">
@@ -709,7 +717,7 @@ function RecurringExpenseForm({ onSubmit }) {
 }
 
 
-function TransactionForm({ onSubmit }) {
+function TransactionForm({ onSubmit, allTransactions }) {
     const [type, setType] = useState('Expense');
     const [amount, setAmount] = useState('');
     const [currency, setCurrency] = useState(localStorage.getItem('lastUsedCurrency') || 'USD');
@@ -718,9 +726,27 @@ function TransactionForm({ onSubmit }) {
     const [description, setDescription] = useState('');
     const [formError, setFormError] = useState('');
 
+    const sortedCategories = useMemo(() => {
+        const baseCategories = type === 'Expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
+        const relevantTransactions = allTransactions.filter(t => t.type === type);
+        
+        const counts = relevantTransactions.reduce((acc, t) => {
+            acc[t.category] = (acc[t.category] || 0) + 1;
+            return acc;
+        }, {});
+
+        const sorted = baseCategories.map(c => ({ category: c, count: counts[c] || 0 }))
+            .sort((a, b) => b.count - a.count);
+        
+        const top5 = sorted.slice(0, 5).map(item => item.category);
+        const rest = baseCategories.filter(c => !top5.includes(c)).sort();
+        
+        return [...top5, ...rest];
+    }, [allTransactions, type]);
+
     useEffect(() => {
-        setCategory(type === 'Expense' ? EXPENSE_CATEGORIES[0] : INCOME_CATEGORIES[0]);
-    }, [type]);
+        setCategory(sortedCategories[0]);
+    }, [type, sortedCategories]);
 
     const handleCurrencyChange = (e) => {
         const newCurrency = e.target.value;
@@ -761,7 +787,7 @@ function TransactionForm({ onSubmit }) {
                     <div>
                         <label htmlFor="category" className="block text-sm font-medium text-gray-700">Category</label>
                         <select id="category" value={category} onChange={e => setCategory(e.target.value)} className="mt-1 block w-full px-3 py-2 border-gray-300 rounded-md shadow-sm">
-                            {(type === 'Expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES).map(c => <option key={c}>{c}</option>)}
+                            {sortedCategories.map(c => <option key={c}>{c}</option>)}
                         </select>
                     </div>
                     <div>
