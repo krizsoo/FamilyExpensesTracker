@@ -135,18 +135,13 @@ function AuthScreen({ auth }) {
 // --- Main Application Logic Component ---
 function FinanceTracker({ user, onSignOut }) {
     const [db, setDb] = useState(null);
-    const [page, setPage] = useState('dashboard'); // 'dashboard', 'recurring', or 'import'
-    
-    // State for summaries (all transactions)
+    const [page, setPage] = useState('dashboard');
     const [allTransactions, setAllTransactions] = useState([]);
-    
-    // State for pagination
     const [paginatedTransactions, setPaginatedTransactions] = useState([]);
     const [lastVisible, setLastVisible] = useState(null);
     const [firstVisible, setFirstVisible] = useState(null);
     const [isLastPage, setIsLastPage] = useState(false);
     const [currentPage, setCurrentPage] = useState(1);
-
     const [recurringExpenses, setRecurringExpenses] = useState([]);
     const [displayCurrency, setDisplayCurrency] = useState('USD');
     const [latestRates, setLatestRates] = useState(null);
@@ -159,35 +154,43 @@ function FinanceTracker({ user, onSignOut }) {
         setDb(getFirestore(initializeApp(firebaseConfig)));
     }, []);
 
-    // Effect for fetching ALL transactions for summaries
-    useEffect(() => {
-        if (!db) return;
-        const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
-        const q = query(collection(db, collectionPath));
-        const unsubscribe = onSnapshot(q, (querySnapshot) => {
-            const data = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
-            setAllTransactions(data);
-        }, (err) => console.error("Firestore summary error:", err));
-        return () => unsubscribe();
-    }, [db]);
+    const showToast = (message, type = 'success') => {
+        setToast({ show: true, message, type });
+        setTimeout(() => setToast({ show: false, message: '', type }), 4000);
+    };
 
-    // Effect for fetching PAGINATED transactions for display
-    const fetchTransactions = useCallback(async (direction = 'initial') => {
+    // --- Data Fetching Logic ---
+    const fetchFirstPage = useCallback(async () => {
         if (!db) return;
         setIsLoading(true);
         try {
             const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
-            let q;
-            const baseQuery = collection(db, collectionPath);
+            const q = query(collection(db, collectionPath), orderBy("transactionDate", "desc"), limit(TRANSACTIONS_PER_PAGE));
+            const documentSnapshots = await getDocs(q);
+            const newTransactions = documentSnapshots.docs.map(doc => ({ id: doc.id, ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
 
-            if (direction === 'next' && lastVisible) {
-                q = query(baseQuery, orderBy("transactionDate", "desc"), startAfter(lastVisible), limit(TRANSACTIONS_PER_PAGE));
-            } else if (direction === 'prev' && firstVisible) {
-                q = query(baseQuery, orderBy("transactionDate", "desc"), endBefore(firstVisible), limitToLast(TRANSACTIONS_PER_PAGE));
-            } else { // initial fetch
-                q = query(baseQuery, orderBy("transactionDate", "desc"), limit(TRANSACTIONS_PER_PAGE));
-            }
+            setPaginatedTransactions(newTransactions);
+            setFirstVisible(documentSnapshots.docs[0]);
+            setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
+            setCurrentPage(1);
 
+            const nextQuery = query(collection(db, collectionPath), orderBy("transactionDate", "desc"), startAfter(documentSnapshots.docs[documentSnapshots.docs.length - 1]), limit(1));
+            const nextDocs = await getDocs(nextQuery);
+            setIsLastPage(nextDocs.empty);
+        } catch (error) {
+            console.error("Error fetching first page:", error);
+            showToast("Could not load transactions.", "error");
+        } finally {
+            setIsLoading(false);
+        }
+    }, [db]);
+
+    const fetchNextPage = async () => {
+        if (!db || !lastVisible) return;
+        setIsLoading(true);
+        try {
+            const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
+            const q = query(collection(db, collectionPath), orderBy("transactionDate", "desc"), startAfter(lastVisible), limit(TRANSACTIONS_PER_PAGE));
             const documentSnapshots = await getDocs(q);
             const newTransactions = documentSnapshots.docs.map(doc => ({ id: doc.id, ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
             
@@ -195,54 +198,70 @@ function FinanceTracker({ user, onSignOut }) {
                 setPaginatedTransactions(newTransactions);
                 setFirstVisible(documentSnapshots.docs[0]);
                 setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
-                
-                const nextQuery = query(baseQuery, orderBy("transactionDate", "desc"), startAfter(documentSnapshots.docs[documentSnapshots.docs.length - 1]), limit(1));
+                setCurrentPage(p => p + 1);
+
+                const nextQuery = query(collection(db, collectionPath), orderBy("transactionDate", "desc"), startAfter(documentSnapshots.docs[documentSnapshots.docs.length - 1]), limit(1));
                 const nextDocs = await getDocs(nextQuery);
                 setIsLastPage(nextDocs.empty);
-
-            } else if (direction !== 'initial') {
-                showToast("No more transactions to show.", "success");
-                if (direction === 'next') setIsLastPage(true);
-                if (direction === 'prev') setCurrentPage(1);
             } else {
-                 setPaginatedTransactions([]);
-                 setIsLastPage(true);
+                setIsLastPage(true);
+                showToast("No more transactions.", "success");
             }
-
         } catch (error) {
-            console.error("Error fetching paginated transactions:", error);
-            showToast("Could not load transactions.", "error");
+            console.error("Error fetching next page:", error);
         } finally {
             setIsLoading(false);
         }
-    }, [db, lastVisible, firstVisible]);
-
-    useEffect(() => {
-        if(db) fetchTransactions('initial');
-    }, [db, fetchTransactions]);
-
-    const handleNextPage = () => {
-        setCurrentPage(p => p + 1);
-        fetchTransactions('next');
     };
 
-    const handlePrevPage = () => {
-        setCurrentPage(p => p - 1);
-        fetchTransactions('prev');
+    const fetchPrevPage = async () => {
+        if (!db || !firstVisible) return;
+        setIsLoading(true);
+        try {
+            const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
+            const q = query(collection(db, collectionPath), orderBy("transactionDate", "desc"), endBefore(firstVisible), limitToLast(TRANSACTIONS_PER_PAGE));
+            const documentSnapshots = await getDocs(q);
+            const newTransactions = documentSnapshots.docs.map(doc => ({ id: doc.id, ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
+            
+            if (newTransactions.length > 0) {
+                setPaginatedTransactions(newTransactions);
+                setFirstVisible(documentSnapshots.docs[0]);
+                setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
+                setCurrentPage(p => p - 1);
+                setIsLastPage(false);
+            }
+        } catch (error) {
+            console.error("Error fetching previous page:", error);
+        } finally {
+            setIsLoading(false);
+        }
     };
 
-    // Effect for fetching recurring expenses
+    // Initial fetch and listeners
     useEffect(() => {
-        if (!db) return;
-        const collectionPath = `artifacts/${appId}/families/${familyId}/recurring`;
-        const q = query(collection(db, collectionPath), orderBy("createdAt", "desc"));
-        const unsubscribe = onSnapshot(q, (querySnapshot) => {
-            const data = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            setRecurringExpenses(data);
-        }, (err) => console.error("Firestore recurring error:", err));
-        return () => unsubscribe();
-    }, [db]);
+        if (db) {
+            fetchFirstPage();
 
+            // Listener for ALL transactions for summary
+            const summaryQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/transactions`));
+            const unsubscribeSummary = onSnapshot(summaryQuery, (snapshot) => {
+                const data = snapshot.docs.map(doc => ({ ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
+                setAllTransactions(data);
+            });
+
+            // Listener for recurring expenses
+            const recurringQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/recurring`), orderBy("createdAt", "desc"));
+            const unsubscribeRecurring = onSnapshot(recurringQuery, (snapshot) => {
+                const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                setRecurringExpenses(data);
+            });
+
+            return () => {
+                unsubscribeSummary();
+                unsubscribeRecurring();
+            };
+        }
+    }, [db, fetchFirstPage]);
 
     useEffect(() => {
         const manageRateCache = async () => {
@@ -273,11 +292,6 @@ function FinanceTracker({ user, onSignOut }) {
         manageRateCache();
     }, []);
 
-    const showToast = (message, type = 'success') => {
-        setToast({ show: true, message, type });
-        setTimeout(() => setToast({ show: false, message: '', type }), 4000);
-    };
-
     const addTransaction = useCallback(async (data) => {
         if (!db || !latestRates) { showToast("Data not ready, please try again.", "error"); return; }
         setIsLoading(true);
@@ -288,10 +302,9 @@ function FinanceTracker({ user, onSignOut }) {
             const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
             await addDoc(collection(db, collectionPath), { ...data, originalAmount: parseFloat(originalAmount), transactionDate: Timestamp.fromDate(new Date(data.transactionDate)), baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase), createdAt: Timestamp.now() });
             showToast(`${data.type} added successfully!`);
-            fetchTransactions('initial');
-            setCurrentPage(1);
+            fetchFirstPage();
         } catch (e) { showToast(`Failed to add transaction: ${e.message}`, 'error'); } finally { setIsLoading(false); }
-    }, [db, latestRates, fetchTransactions]);
+    }, [db, latestRates, fetchFirstPage]);
 
     const updateTransaction = useCallback(async (updatedData) => {
         if (!db || !editingTransaction || !latestRates) { showToast("Data not ready, please try again.", "error"); return; }
@@ -305,9 +318,9 @@ function FinanceTracker({ user, onSignOut }) {
             await updateDoc(docRef, payload);
             showToast("Transaction updated!");
             setEditingTransaction(null);
-            fetchTransactions('initial');
+            fetchFirstPage();
         } catch (e) { showToast(`Update failed: ${e.message}`, 'error'); } finally { setIsLoading(false); }
-    }, [db, editingTransaction, latestRates, fetchTransactions]);
+    }, [db, editingTransaction, latestRates, fetchFirstPage]);
 
     const requestDelete = (id, type) => setShowConfirmModal({ show: true, id, type });
     
@@ -321,7 +334,7 @@ function FinanceTracker({ user, onSignOut }) {
         try {
             await deleteDoc(doc(db, `artifacts/${appId}/families/${familyId}/${collectionName}`, idToDelete));
             showToast(`${type.charAt(0).toUpperCase() + type.slice(1)} deleted.`);
-            if(type === 'transaction') fetchTransactions('initial');
+            if(type === 'transaction') fetchFirstPage();
         } catch (e) { showToast(`Failed to delete: ${e.message}`, 'error'); } 
         finally { 
             setIsLoading(false); 
@@ -377,7 +390,7 @@ function FinanceTracker({ user, onSignOut }) {
                 {page === 'dashboard' && (
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                         <div className="lg:col-span-1 space-y-8"><TransactionForm onSubmit={addTransaction} /><SummaryReport summary={summaryData} currency={displayCurrency} onCurrencyChange={setDisplayCurrency} /></div>
-                        <div className="lg:col-span-2 space-y-8"><CategoryChart data={summaryData.expenseChartData} currency={displayCurrency} /><TransactionList transactions={paginatedTransactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} onNextPage={handleNextPage} onPrevPage={handlePrevPage} currentPage={currentPage} isLastPage={isLastPage} /></div>
+                        <div className="lg:col-span-2 space-y-8"><CategoryChart data={summaryData.expenseChartData} currency={displayCurrency} /><TransactionList transactions={paginatedTransactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} onNextPage={fetchNextPage} onPrevPage={fetchPrevPage} currentPage={currentPage} isLastPage={isLastPage} /></div>
                     </div>
                 )}
                 {page === 'recurring' && (
