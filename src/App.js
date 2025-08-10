@@ -169,31 +169,23 @@ export default function App() {
     };
 
     const addTransaction = useCallback(async (data) => {
-        if (!db || !userId) return;
+        if (!db || !userId || !latestRates) {
+            showToast("Data not ready, please try again.", "error");
+            return;
+        }
         setIsLoading(true);
         try {
-            const { originalAmount, originalCurrency, transactionDate } = data;
-            let rate = 1.0;
-            let amountInBase = originalAmount;
+            const { originalAmount, originalCurrency } = data;
+            let rate = latestRates[originalCurrency] || 1;
+            let amountInBase = originalAmount / rate; // Convert from any currency TO USD
 
-            if (originalCurrency !== 'USD') {
-                const date = new Date(transactionDate);
-                const url = `https://v6.exchangerate-api.com/v6/${EXCHANGE_RATE_API_KEY}/history/${originalCurrency}/${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
-                const response = await fetch(url);
-                const apiData = await response.json();
-                if (apiData.result === 'success' && apiData.conversion_rates.USD) {
-                    rate = apiData.conversion_rates.USD;
-                    amountInBase = originalAmount * rate;
-                } else { throw new Error(apiData['error-type'] || "Could not get historical rate."); }
-            }
-            
             const collectionPath = `artifacts/${appId}/users/${userId}/transactions`;
             await addDoc(collection(db, collectionPath), {
                 ...data,
                 originalAmount: parseFloat(originalAmount),
-                transactionDate: Timestamp.fromDate(new Date(transactionDate)),
+                transactionDate: Timestamp.fromDate(new Date(data.transactionDate)),
                 baseCurrency: 'USD',
-                exchangeRateToBase: rate,
+                exchangeRateToBase: rate, // This is rate from USD to originalCurrency
                 amountInBaseCurrency: parseFloat(amountInBase),
                 createdAt: Timestamp.now(),
             });
@@ -203,40 +195,31 @@ export default function App() {
         } finally {
             setIsLoading(false);
         }
-    }, [db, userId]);
+    }, [db, userId, latestRates]);
 
     const updateTransaction = useCallback(async (updatedData) => {
-        if (!db || !userId || !editingTransaction) return;
+        if (!db || !userId || !editingTransaction || !latestRates) {
+            showToast("Data not ready, please try again.", "error");
+            return;
+        }
         setIsLoading(true);
 
         try {
             const docRef = doc(db, `artifacts/${appId}/users/${userId}/transactions`, editingTransaction.id);
+            
+            const { originalAmount, originalCurrency } = updatedData;
+            const rate = latestRates[originalCurrency] || 1;
+            const amountInBase = originalAmount / rate;
+
             const payload = {
                 ...updatedData,
-                originalAmount: parseFloat(updatedData.originalAmount),
+                originalAmount: parseFloat(originalAmount),
                 transactionDate: Timestamp.fromDate(new Date(updatedData.transactionDate)),
+                baseCurrency: 'USD',
+                exchangeRateToBase: rate,
+                amountInBaseCurrency: parseFloat(amountInBase),
             };
 
-            const needsRateUpdate = 
-                updatedData.originalAmount !== editingTransaction.originalAmount ||
-                updatedData.originalCurrency !== editingTransaction.originalCurrency ||
-                new Date(updatedData.transactionDate).toISOString().split('T')[0] !== editingTransaction.transactionDate.toISOString().split('T')[0];
-
-            if (needsRateUpdate) {
-                if (payload.originalCurrency === 'USD') {
-                    payload.exchangeRateToBase = 1;
-                    payload.amountInBaseCurrency = payload.originalAmount;
-                } else {
-                    const date = new Date(payload.transactionDate.toDate());
-                    const url = `https://v6.exchangerate-api.com/v6/${EXCHANGE_RATE_API_KEY}/history/${payload.originalCurrency}/${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
-                    const response = await fetch(url);
-                    const apiData = await response.json();
-                    if (apiData.result === 'success' && apiData.conversion_rates.USD) {
-                        payload.exchangeRateToBase = apiData.conversion_rates.USD;
-                        payload.amountInBaseCurrency = payload.originalAmount * apiData.conversion_rates.USD;
-                    } else { throw new Error(apiData['error-type'] || "Could not update historical rate."); }
-                }
-            }
             await updateDoc(docRef, payload);
             showToast("Transaction updated!");
             setEditingTransaction(null);
@@ -245,7 +228,7 @@ export default function App() {
         } finally {
             setIsLoading(false);
         }
-    }, [db, userId, editingTransaction]);
+    }, [db, userId, editingTransaction, latestRates]);
     
     const requestDeleteTransaction = (id) => setShowConfirmModal({ show: true, id });
     const handleConfirmDelete = async () => {
