@@ -22,9 +22,9 @@ const TRANSACTIONS_PER_PAGE = 25;
 const EXCHANGE_RATE_API_KEY = "3a46be8bcdb0d1403ff6da95";
 
 // --- Category Lists ---
-const EXPENSE_CATEGORIES = ["Groceries", "Utilities", "Rent/Mortgage", "Transportation", "Dining Out", "Entertainment", "Healthcare", "Shopping", "Travel", "Education", "Other"];
-const INCOME_CATEGORIES = ["Salary", "Bonus", "Gift", "Freelance", "Investment", "Other"];
-const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#da70d6', '#ffc0cb', '#3cb371', '#ffa500', '#6a5acd'];
+const INCOME_CATEGORIES = ["Salary", "Extra income"];
+const EXPENSE_CATEGORIES = ["Accommodation", "Beauty", "Bills", "Business", "Car", "Charity", "Clothing", "Education", "Entertainment", "Food and drinks", "Gifts", "Groceries", "Healthcare", "Hobbies", "Home", "Kids", "Other", "Savings", "Shopping", "Sport and Hobbies", "Transport", "Travel", "Utilities", "Work"];
+const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#da70d6', '#ffc0cb', '#3cb371', '#ffa500', '#6a5acd', '#FF5733', '#C70039', '#900C3F', '#581845'];
 const CURRENCY_SYMBOLS = { USD: '$', EUR: '€', GBP: '£', HUF: 'Ft' };
 
 // --- Helper Components & Icons ---
@@ -144,6 +144,7 @@ function FinanceTracker({ user, onSignOut }) {
     const [currentPage, setCurrentPage] = useState(1);
     const [recurringExpenses, setRecurringExpenses] = useState([]);
     const [displayCurrency, setDisplayCurrency] = useState('USD');
+    const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7)); // e.g., "2025-08"
     const [latestRates, setLatestRates] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
     const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
@@ -355,15 +356,18 @@ function FinanceTracker({ user, onSignOut }) {
 
     const summaryData = useMemo(() => {
         if (!latestRates) return { totalExpense: 0, totalIncome: 0, netBalance: 0, expenseChartData: [] };
+        
+        const filteredTransactions = allTransactions.filter(t => t.transactionDate.toISOString().slice(0, 7) === selectedMonth);
+
         const conversionRate = latestRates[displayCurrency] || 1;
-        const expenses = allTransactions.filter(t => t.type === 'Expense');
-        const income = allTransactions.filter(t => t.type === 'Income');
+        const expenses = filteredTransactions.filter(t => t.type === 'Expense');
+        const income = filteredTransactions.filter(t => t.type === 'Income');
         const totalExpense = expenses.reduce((acc, t) => acc + t.amountInBaseCurrency, 0) * conversionRate;
         const totalIncome = income.reduce((acc, t) => acc + t.amountInBaseCurrency, 0) * conversionRate;
         const expenseByCategory = expenses.reduce((acc, t) => { acc[t.category] = (acc[t.category] || 0) + (t.amountInBaseCurrency * conversionRate); return acc; }, {});
         const expenseChartData = Object.entries(expenseByCategory).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
         return { totalExpense, totalIncome, netBalance: totalIncome - totalExpense, expenseChartData };
-    }, [allTransactions, displayCurrency, latestRates]);
+    }, [allTransactions, displayCurrency, latestRates, selectedMonth]);
 
     return (
         <div className="bg-gray-100 min-h-screen font-sans text-gray-800">
@@ -389,7 +393,7 @@ function FinanceTracker({ user, onSignOut }) {
             <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
                 {page === 'dashboard' && (
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                        <div className="lg:col-span-1 space-y-8"><TransactionForm onSubmit={addTransaction} /><SummaryReport summary={summaryData} currency={displayCurrency} onCurrencyChange={setDisplayCurrency} /></div>
+                        <div className="lg:col-span-1 space-y-8"><TransactionForm onSubmit={addTransaction} /><SummaryReport summary={summaryData} currency={displayCurrency} onCurrencyChange={setDisplayCurrency} selectedMonth={selectedMonth} onMonthChange={setSelectedMonth} /></div>
                         <div className="lg:col-span-2 space-y-8"><CategoryChart data={summaryData.expenseChartData} currency={displayCurrency} /><TransactionList transactions={paginatedTransactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} onNextPage={fetchNextPage} onPrevPage={fetchPrevPage} currentPage={currentPage} isLastPage={isLastPage} /></div>
                     </div>
                 )}
@@ -732,17 +736,21 @@ function EditModal({ transaction, onSave, onCancel }) {
 }
 
 
-function SummaryReport({ summary, currency, onCurrencyChange }) {
+function SummaryReport({ summary, currency, onCurrencyChange, selectedMonth, onMonthChange }) {
     const formatCurrency = (value) => `${CURRENCY_SYMBOLS[currency] || ''}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     return (
         <div className="bg-white p-6 rounded-lg shadow-md">
             <div className="flex justify-between items-center mb-4">
                 <h2 className="text-2xl font-bold">Summary</h2>
-                <select value={currency} onChange={e => onCurrencyChange(e.target.value)} className="px-3 py-1 border-gray-300 rounded-md shadow-sm">
-                    <option>USD</option> <option>EUR</option> <option>GBP</option> <option>HUF</option>
-                </select>
+                <input type="month" value={selectedMonth} onChange={e => onMonthChange(e.target.value)} className="px-3 py-1 border-gray-300 rounded-md shadow-sm" />
             </div>
             <div className="space-y-3">
+                 <div className="flex justify-between items-center">
+                    <span className="font-medium">Currency:</span>
+                    <select value={currency} onChange={e => onCurrencyChange(e.target.value)} className="px-3 py-1 border-gray-300 rounded-md shadow-sm">
+                        <option>USD</option> <option>EUR</option> <option>GBP</option> <option>HUF</option>
+                    </select>
+                </div>
                 <div className="flex justify-between items-center"><span className="font-medium text-green-600">Total Income:</span><span className="font-semibold text-green-600">{formatCurrency(summary.totalIncome)}</span></div>
                 <div className="flex justify-between items-center"><span className="font-medium text-red-600">Total Expenses:</span><span className="font-semibold text-red-600">{formatCurrency(summary.totalExpense)}</span></div>
                 <hr/>
@@ -767,7 +775,7 @@ function CategoryChart({ data, currency }) {
                             <Legend />
                         </PieChart>
                     </ResponsiveContainer>
-                ) : <p className="text-center text-gray-500 pt-16">No expense data to display.</p>}
+                ) : <p className="text-center text-gray-500 pt-16">No expense data to display for this month.</p>}
             </div>
         </div>
     );
