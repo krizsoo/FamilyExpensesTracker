@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, updateDoc, Timestamp, orderBy } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, updateDoc, Timestamp, orderBy, limit, startAfter, getDocs, endBefore, limitToLast, writeBatch } from 'firebase/firestore';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 
 // --- Firebase Configuration ---
@@ -16,6 +16,7 @@ try {
 // --- App & Family ID ---
 const appId = 'family-finance-tracker-v1';
 const familyId = 'shared-family-data'; // All users will write to this single data store.
+const TRANSACTIONS_PER_PAGE = 25;
 
 // --- Exchange Rate API Key ---
 const EXCHANGE_RATE_API_KEY = "3a46be8bcdb0d1403ff6da95";
@@ -134,8 +135,18 @@ function AuthScreen({ auth }) {
 // --- Main Application Logic Component ---
 function FinanceTracker({ user, onSignOut }) {
     const [db, setDb] = useState(null);
-    const [page, setPage] = useState('dashboard'); // 'dashboard' or 'recurring'
-    const [transactions, setTransactions] = useState([]);
+    const [page, setPage] = useState('dashboard'); // 'dashboard', 'recurring', or 'import'
+    
+    // State for summaries (all transactions)
+    const [allTransactions, setAllTransactions] = useState([]);
+    
+    // State for pagination
+    const [paginatedTransactions, setPaginatedTransactions] = useState([]);
+    const [lastVisible, setLastVisible] = useState(null);
+    const [firstVisible, setFirstVisible] = useState(null);
+    const [isLastPage, setIsLastPage] = useState(false);
+    const [currentPage, setCurrentPage] = useState(1);
+
     const [recurringExpenses, setRecurringExpenses] = useState([]);
     const [displayCurrency, setDisplayCurrency] = useState('USD');
     const [latestRates, setLatestRates] = useState(null);
@@ -148,19 +159,77 @@ function FinanceTracker({ user, onSignOut }) {
         setDb(getFirestore(initializeApp(firebaseConfig)));
     }, []);
 
-    // Effect for fetching transactions
+    // Effect for fetching ALL transactions for summaries
     useEffect(() => {
         if (!db) return;
-        setIsLoading(true);
         const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
-        const q = query(collection(db, collectionPath), orderBy("transactionDate", "desc"));
+        const q = query(collection(db, collectionPath));
         const unsubscribe = onSnapshot(q, (querySnapshot) => {
             const data = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
-            setTransactions(data);
-            setIsLoading(false);
-        }, (err) => console.error("Firestore error:", err));
+            setAllTransactions(data);
+        }, (err) => console.error("Firestore summary error:", err));
         return () => unsubscribe();
     }, [db]);
+
+    // Effect for fetching PAGINATED transactions for display
+    const fetchTransactions = useCallback(async (direction = 'initial') => {
+        if (!db) return;
+        setIsLoading(true);
+        try {
+            const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
+            let q;
+            const baseQuery = collection(db, collectionPath);
+
+            if (direction === 'next' && lastVisible) {
+                q = query(baseQuery, orderBy("transactionDate", "desc"), startAfter(lastVisible), limit(TRANSACTIONS_PER_PAGE));
+            } else if (direction === 'prev' && firstVisible) {
+                q = query(baseQuery, orderBy("transactionDate", "desc"), endBefore(firstVisible), limitToLast(TRANSACTIONS_PER_PAGE));
+            } else { // initial fetch
+                q = query(baseQuery, orderBy("transactionDate", "desc"), limit(TRANSACTIONS_PER_PAGE));
+            }
+
+            const documentSnapshots = await getDocs(q);
+            const newTransactions = documentSnapshots.docs.map(doc => ({ id: doc.id, ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
+            
+            if (newTransactions.length > 0) {
+                setPaginatedTransactions(newTransactions);
+                setFirstVisible(documentSnapshots.docs[0]);
+                setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
+                
+                const nextQuery = query(baseQuery, orderBy("transactionDate", "desc"), startAfter(documentSnapshots.docs[documentSnapshots.docs.length - 1]), limit(1));
+                const nextDocs = await getDocs(nextQuery);
+                setIsLastPage(nextDocs.empty);
+
+            } else if (direction !== 'initial') {
+                showToast("No more transactions to show.", "success");
+                if (direction === 'next') setIsLastPage(true);
+                if (direction === 'prev') setCurrentPage(1);
+            } else {
+                 setPaginatedTransactions([]);
+                 setIsLastPage(true);
+            }
+
+        } catch (error) {
+            console.error("Error fetching paginated transactions:", error);
+            showToast("Could not load transactions.", "error");
+        } finally {
+            setIsLoading(false);
+        }
+    }, [db, lastVisible, firstVisible]);
+
+    useEffect(() => {
+        if(db) fetchTransactions('initial');
+    }, [db, fetchTransactions]);
+
+    const handleNextPage = () => {
+        setCurrentPage(p => p + 1);
+        fetchTransactions('next');
+    };
+
+    const handlePrevPage = () => {
+        setCurrentPage(p => p - 1);
+        fetchTransactions('prev');
+    };
 
     // Effect for fetching recurring expenses
     useEffect(() => {
@@ -219,8 +288,10 @@ function FinanceTracker({ user, onSignOut }) {
             const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
             await addDoc(collection(db, collectionPath), { ...data, originalAmount: parseFloat(originalAmount), transactionDate: Timestamp.fromDate(new Date(data.transactionDate)), baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase), createdAt: Timestamp.now() });
             showToast(`${data.type} added successfully!`);
+            fetchTransactions('initial');
+            setCurrentPage(1);
         } catch (e) { showToast(`Failed to add transaction: ${e.message}`, 'error'); } finally { setIsLoading(false); }
-    }, [db, latestRates]);
+    }, [db, latestRates, fetchTransactions]);
 
     const updateTransaction = useCallback(async (updatedData) => {
         if (!db || !editingTransaction || !latestRates) { showToast("Data not ready, please try again.", "error"); return; }
@@ -234,8 +305,9 @@ function FinanceTracker({ user, onSignOut }) {
             await updateDoc(docRef, payload);
             showToast("Transaction updated!");
             setEditingTransaction(null);
+            fetchTransactions('initial');
         } catch (e) { showToast(`Update failed: ${e.message}`, 'error'); } finally { setIsLoading(false); }
-    }, [db, editingTransaction, latestRates]);
+    }, [db, editingTransaction, latestRates, fetchTransactions]);
 
     const requestDelete = (id, type) => setShowConfirmModal({ show: true, id, type });
     
@@ -249,6 +321,7 @@ function FinanceTracker({ user, onSignOut }) {
         try {
             await deleteDoc(doc(db, `artifacts/${appId}/families/${familyId}/${collectionName}`, idToDelete));
             showToast(`${type.charAt(0).toUpperCase() + type.slice(1)} deleted.`);
+            if(type === 'transaction') fetchTransactions('initial');
         } catch (e) { showToast(`Failed to delete: ${e.message}`, 'error'); } 
         finally { 
             setIsLoading(false); 
@@ -270,14 +343,14 @@ function FinanceTracker({ user, onSignOut }) {
     const summaryData = useMemo(() => {
         if (!latestRates) return { totalExpense: 0, totalIncome: 0, netBalance: 0, expenseChartData: [] };
         const conversionRate = latestRates[displayCurrency] || 1;
-        const expenses = transactions.filter(t => t.type === 'Expense');
-        const income = transactions.filter(t => t.type === 'Income');
+        const expenses = allTransactions.filter(t => t.type === 'Expense');
+        const income = allTransactions.filter(t => t.type === 'Income');
         const totalExpense = expenses.reduce((acc, t) => acc + t.amountInBaseCurrency, 0) * conversionRate;
         const totalIncome = income.reduce((acc, t) => acc + t.amountInBaseCurrency, 0) * conversionRate;
         const expenseByCategory = expenses.reduce((acc, t) => { acc[t.category] = (acc[t.category] || 0) + (t.amountInBaseCurrency * conversionRate); return acc; }, {});
         const expenseChartData = Object.entries(expenseByCategory).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
         return { totalExpense, totalIncome, netBalance: totalIncome - totalExpense, expenseChartData };
-    }, [transactions, displayCurrency, latestRates]);
+    }, [allTransactions, displayCurrency, latestRates]);
 
     return (
         <div className="bg-gray-100 min-h-screen font-sans text-gray-800">
@@ -293,6 +366,7 @@ function FinanceTracker({ user, onSignOut }) {
                          <nav className="flex space-x-2 rounded-lg bg-gray-200 p-1">
                             <button onClick={() => setPage('dashboard')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'dashboard' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Dashboard</button>
                             <button onClick={() => setPage('recurring')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'recurring' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Recurring</button>
+                            <button onClick={() => setPage('import')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'import' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Import</button>
                          </nav>
                     </div>
                     <button onClick={onSignOut} className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-md transition">Sign Out</button>
@@ -300,13 +374,17 @@ function FinanceTracker({ user, onSignOut }) {
             </header>
 
             <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                {page === 'dashboard' ? (
+                {page === 'dashboard' && (
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                         <div className="lg:col-span-1 space-y-8"><TransactionForm onSubmit={addTransaction} /><SummaryReport summary={summaryData} currency={displayCurrency} onCurrencyChange={setDisplayCurrency} /></div>
-                        <div className="lg:col-span-2 space-y-8"><CategoryChart data={summaryData.expenseChartData} currency={displayCurrency} /><TransactionList transactions={transactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} /></div>
+                        <div className="lg:col-span-2 space-y-8"><CategoryChart data={summaryData.expenseChartData} currency={displayCurrency} /><TransactionList transactions={paginatedTransactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} onNextPage={handleNextPage} onPrevPage={handlePrevPage} currentPage={currentPage} isLastPage={isLastPage} /></div>
                     </div>
-                ) : (
+                )}
+                {page === 'recurring' && (
                     <RecurringPage expenses={recurringExpenses} onAdd={addRecurringExpense} onDelete={(id) => requestDelete(id, 'recurring')} />
+                )}
+                {page === 'import' && (
+                    <ImportPage db={db} showToast={showToast} />
                 )}
             </main>
         </div>
@@ -314,6 +392,115 @@ function FinanceTracker({ user, onSignOut }) {
 }
 
 // --- Child Components ---
+
+function ImportPage({ db, showToast }) {
+    const [file, setFile] = useState(null);
+    const [isImporting, setIsImporting] = useState(false);
+    const [progress, setProgress] = useState(0);
+
+    const handleFileChange = (e) => {
+        setFile(e.target.files[0]);
+    };
+
+    const handleImport = async () => {
+        if (!file) {
+            showToast("Please select a CSV file first.", "error");
+            return;
+        }
+        if (!db) {
+            showToast("Database not ready.", "error");
+            return;
+        }
+
+        setIsImporting(true);
+        setProgress(0);
+
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+            const csvData = event.target.result;
+            // Basic CSV parsing
+            const rows = csvData.split('\n').slice(1); // Skip header row
+            const totalRecords = rows.length;
+            let importedCount = 0;
+
+            const approxRateHufToUsd = 0.0027; // Using an approximate rate
+
+            // Use Firestore batch writes for efficiency
+            const batch = writeBatch(db);
+            const collectionRef = collection(db, `artifacts/${appId}/families/${familyId}/transactions`);
+
+            for (let i = 0; i < totalRecords; i++) {
+                const row = rows[i].split(',');
+                const [transactionDate, originalAmount, description, category] = row;
+
+                if (!transactionDate || !originalAmount) continue;
+
+                const date = new Date(transactionDate);
+                const amount = parseFloat(originalAmount);
+
+                if (isNaN(date.getTime()) || isNaN(amount)) {
+                    console.warn('Skipping invalid row:', row);
+                    continue;
+                }
+
+                const newTransaction = {
+                    type: 'Expense',
+                    originalAmount: amount,
+                    originalCurrency: 'HUF',
+                    category: category || 'Other',
+                    transactionDate: Timestamp.fromDate(date),
+                    description: description || '',
+                    baseCurrency: 'USD',
+                    exchangeRateToBase: 1 / approxRateHufToUsd,
+                    amountInBaseCurrency: amount * approxRateHufToUsd,
+                    createdAt: Timestamp.now()
+                };
+                
+                const docRef = doc(collectionRef); // Create a new doc with a random ID
+                batch.set(docRef, newTransaction);
+                
+                importedCount++;
+                setProgress(Math.round((i + 1) / totalRecords * 100));
+
+                // Commit the batch every 500 writes
+                if ((i + 1) % 500 === 0) {
+                    await batch.commit();
+                    batch = writeBatch(db); // start a new batch
+                }
+            }
+
+            if (importedCount % 500 !== 0) {
+                await batch.commit(); // Commit the final batch
+            }
+            
+            showToast(`Successfully imported ${importedCount} of ${totalRecords} records.`, "success");
+            setIsImporting(false);
+        };
+        reader.readAsText(file);
+    };
+
+    return (
+        <div className="bg-white p-8 rounded-lg shadow-md max-w-2xl mx-auto">
+            <h2 className="text-2xl font-bold mb-4">Import Historical Data</h2>
+            <p className="text-gray-600 mb-6">Upload your CSV file with columns: `transactionDate`, `originalAmount`, `description`, `category`. All amounts will be imported as HUF expenses.</p>
+            
+            <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">CSV File</label>
+                <input type="file" accept=".csv" onChange={handleFileChange} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
+            </div>
+
+            <button onClick={handleImport} disabled={isImporting || !file} className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-md transition disabled:opacity-50 disabled:cursor-not-allowed">
+                {isImporting ? `Importing... ${progress}%` : 'Start Import'}
+            </button>
+
+            {isImporting && (
+                <div className="w-full bg-gray-200 rounded-full h-2.5 mt-4">
+                    <div className="bg-blue-600 h-2.5 rounded-full" style={{ width: `${progress}%` }}></div>
+                </div>
+            )}
+        </div>
+    );
+}
 
 function RecurringPage({ expenses, onAdd, onDelete }) {
     return (
@@ -573,7 +760,7 @@ function CategoryChart({ data, currency }) {
     );
 }
 
-function TransactionList({ transactions, onDelete, onEdit, displayCurrency, latestRates }) {
+function TransactionList({ transactions, onDelete, onEdit, displayCurrency, latestRates, onNextPage, onPrevPage, currentPage, isLastPage }) {
     const conversionRate = latestRates ? latestRates[displayCurrency] || 1 : 1;
     const formatCurrency = (value) => `${CURRENCY_SYMBOLS[displayCurrency] || ''}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     
@@ -615,6 +802,11 @@ function TransactionList({ transactions, onDelete, onEdit, displayCurrency, late
                     </tbody>
                 </table>
                 {transactions.length === 0 && <p className="text-center text-gray-500 py-8">No transactions recorded yet.</p>}
+            </div>
+             <div className="flex justify-between items-center mt-4">
+                <button onClick={onPrevPage} disabled={currentPage === 1} className="px-4 py-2 bg-gray-300 text-gray-800 rounded-md disabled:opacity-50 disabled:cursor-not-allowed">Previous</button>
+                <span className="text-sm text-gray-700">Page {currentPage}</span>
+                <button onClick={onNextPage} disabled={isLastPage} className="px-4 py-2 bg-gray-300 text-gray-800 rounded-md disabled:opacity-50 disabled:cursor-not-allowed">Next</button>
             </div>
         </div>
     );
