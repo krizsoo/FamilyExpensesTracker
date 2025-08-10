@@ -413,7 +413,7 @@ function MonthFilter({ availableMonths, selectedMonths, onSelectionChange }) {
                 <option value="All">All Months</option>
                 {availableMonths.map(month => (
                     <option key={month} value={month}>
-                        {new Date(month + '-02').toLocaleString('default', { month: 'long', year: 'numeric' })}
+                        {new Date(month + '-02T00:00:00Z').toLocaleString('default', { month: 'long', year: 'numeric', timeZone: 'UTC' })}
                     </option>
                 ))}
             </select>
