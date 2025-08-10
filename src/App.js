@@ -328,13 +328,13 @@ function FinanceTracker({ user, onSignOut }) {
         }
     };
 
-    const addRecurringExpense = useCallback(async (data) => {
+    const addRecurringItem = useCallback(async (data) => {
         if (!db) { showToast("Database not ready", "error"); return; }
         setIsLoading(true);
         try {
             const collectionPath = `artifacts/${appId}/families/${familyId}/recurring`;
-            await addDoc(collection(db, collectionPath), { ...data, originalAmount: parseFloat(data.originalAmount), type: 'Expense', createdAt: Timestamp.now() });
-            showToast('Recurring expense added!');
+            await addDoc(collection(db, collectionPath), { ...data, originalAmount: parseFloat(data.originalAmount), createdAt: Timestamp.now() });
+            showToast('Recurring item added!');
         } catch(e) { showToast(`Failed to add: ${e.message}`, 'error'); }
         finally { setIsLoading(false); }
     }, [db]);
@@ -350,7 +350,7 @@ function FinanceTracker({ user, onSignOut }) {
         );
 
         if (toAdd.length === 0) {
-            showToast("All recurring expenses for this month are already added.", "success");
+            showToast("All recurring items for this month are already added.", "success");
             return;
         }
 
@@ -377,7 +377,7 @@ function FinanceTracker({ user, onSignOut }) {
             });
 
             await batch.commit();
-            showToast(`Added ${toAdd.length} recurring expense(s).`);
+            showToast(`Added ${toAdd.length} recurring item(s).`);
         } catch (e) {
             showToast(`Failed to add recurring items: ${e.message}`, 'error');
         } finally {
@@ -469,7 +469,7 @@ function FinanceTracker({ user, onSignOut }) {
                     </div>
                 )}
                 {page === 'recurring' && (
-                    <RecurringPage expenses={recurringExpenses} onAdd={addRecurringExpense} onDelete={(id) => requestDelete(id, 'recurring')} onPostRecurring={handlePostRecurring} />
+                    <RecurringPage expenses={recurringExpenses} onAdd={addRecurringItem} onDelete={(id) => requestDelete(id, 'recurring')} onPostRecurring={handlePostRecurring} allTransactions={allTransactions} />
                 )}
                 {page === 'import' && (
                     <ImportPage db={db} showToast={showToast} />
@@ -732,20 +732,20 @@ function ImportPage({ db, showToast }) {
     );
 }
 
-function RecurringPage({ expenses, onAdd, onDelete, onPostRecurring }) {
+function RecurringPage({ expenses, onAdd, onDelete, onPostRecurring, allTransactions }) {
     return (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             <div className="md:col-span-1">
-                <RecurringExpenseForm onSubmit={onAdd} />
+                <RecurringItemForm onSubmit={onAdd} allTransactions={allTransactions} />
             </div>
             <div className="md:col-span-2">
                 <div className="bg-white p-6 rounded-lg shadow-md">
                     <div className="flex justify-between items-center mb-4">
-                        <h2 className="text-2xl font-bold">Recurring Monthly Expenses</h2>
+                        <h2 className="text-2xl font-bold">Recurring Monthly Items</h2>
                         <button onClick={onPostRecurring} className="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-md transition">Add for this Month</button>
                     </div>
                     <div className="space-y-3">
-                        {expenses.length === 0 && <p className="text-center text-gray-500 py-8">No recurring expenses defined yet.</p>}
+                        {expenses.length === 0 && <p className="text-center text-gray-500 py-8">No recurring items defined yet.</p>}
                         {expenses.map(exp => (
                             <div key={exp.id} className="flex justify-between items-center p-3 rounded-lg hover:bg-gray-50 border">
                                 <div>
@@ -753,7 +753,7 @@ function RecurringPage({ expenses, onAdd, onDelete, onPostRecurring }) {
                                     <p className="text-sm text-gray-500">{exp.category}</p>
                                 </div>
                                 <div className="flex items-center space-x-4">
-                                     <p className="font-mono text-red-500">{CURRENCY_SYMBOLS[exp.originalCurrency] || ''}{exp.originalAmount.toLocaleString()}</p>
+                                     <p className={`font-mono ${exp.type === 'Income' ? 'text-green-500' : 'text-red-500'}`}>{CURRENCY_SYMBOLS[exp.originalCurrency] || ''}{exp.originalAmount.toLocaleString()}</p>
                                      <button onClick={() => onDelete(exp.id, 'recurring')} className="text-gray-400 hover:text-red-600"><TrashIcon /></button>
                                 </div>
                             </div>
@@ -765,27 +765,50 @@ function RecurringPage({ expenses, onAdd, onDelete, onPostRecurring }) {
     );
 }
 
-function RecurringExpenseForm({ onSubmit }) {
+function RecurringItemForm({ onSubmit, allTransactions }) {
+    const [type, setType] = useState('Expense');
     const [description, setDescription] = useState('');
     const [amount, setAmount] = useState('');
     const [currency, setCurrency] = useState('USD');
     const [category, setCategory] = useState(EXPENSE_CATEGORIES[0]);
 
+    const sortedCategories = useMemo(() => {
+        const baseCategories = type === 'Expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
+        const relevantTransactions = allTransactions.filter(t => t.type === type);
+        
+        const counts = relevantTransactions.reduce((acc, t) => {
+            acc[t.category] = (acc[t.category] || 0) + 1;
+            return acc;
+        }, {});
+
+        const sorted = baseCategories.map(c => ({ category: c, count: counts[c] || 0 }))
+            .sort((a, b) => b.count - a.count);
+        
+        const top5 = sorted.slice(0, 5).map(item => item.category);
+        const rest = baseCategories.filter(c => !top5.includes(c)).sort();
+        
+        return [...top5, ...rest];
+    }, [allTransactions, type]);
+
+     useEffect(() => {
+        setCategory(sortedCategories[0]);
+    }, [type, sortedCategories]);
+
     const handleSubmit = (e) => {
         e.preventDefault();
         if (!description || !amount) return;
-        onSubmit({ description, originalAmount: amount, originalCurrency: currency, category });
+        onSubmit({ type, description, originalAmount: amount, originalCurrency: currency, category });
         setDescription('');
         setAmount('');
     };
 
     return (
         <div className="bg-white p-6 rounded-lg shadow-md">
-            <h2 className="text-2xl font-bold mb-4">Add Recurring Expense</h2>
+            <h2 className="text-2xl font-bold mb-4">Add Recurring Item</h2>
             <form onSubmit={handleSubmit} className="space-y-4">
-                <div>
-                    <label className="block text-sm font-medium text-gray-700">Description</label>
-                    <input type="text" value={description} onChange={e => setDescription(e.target.value)} required className="mt-1 block w-full px-3 py-2 border-gray-300 rounded-md shadow-sm" />
+                 <div className="grid grid-cols-2 gap-2 rounded-lg bg-gray-200 p-1 mb-4">
+                    <button type="button" onClick={() => setType('Expense')} className={`py-2 rounded-md font-semibold ${type === 'Expense' ? 'bg-red-500 text-white shadow' : 'text-gray-600'}`}>Expense</button>
+                    <button type="button" onClick={() => setType('Income')} className={`py-2 rounded-md font-semibold ${type === 'Income' ? 'bg-green-500 text-white shadow' : 'text-gray-600'}`}>Income</button>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                     <div>
@@ -802,10 +825,14 @@ function RecurringExpenseForm({ onSubmit }) {
                  <div>
                     <label className="block text-sm font-medium text-gray-700">Category</label>
                     <select value={category} onChange={e => setCategory(e.target.value)} className="mt-1 block w-full px-3 py-2 border-gray-300 rounded-md shadow-sm">
-                        {EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                        {sortedCategories.map(c => <option key={c}>{c}</option>)}
                     </select>
                 </div>
-                <button type="submit" className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-md transition">Add Recurring</button>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">Description</label>
+                    <input type="text" value={description} onChange={e => setDescription(e.target.value)} required className="mt-1 block w-full px-3 py-2 border-gray-300 rounded-md shadow-sm" />
+                </div>
+                <button type="submit" className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-md transition">Add Recurring Item</button>
             </form>
         </div>
     );
