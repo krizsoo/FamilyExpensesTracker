@@ -444,7 +444,7 @@ function ImportPage({ db, showToast }) {
 
             for (let i = 0; i < totalRecords; i++) {
                 const row = rows[i].split(',');
-                const [transactionDate, originalAmount, description, category] = row;
+                const [transactionDate, originalAmount, category, description] = row;
 
                 if (!transactionDate || !originalAmount) continue;
 
@@ -495,7 +495,7 @@ function ImportPage({ db, showToast }) {
     return (
         <div className="bg-white p-8 rounded-lg shadow-md max-w-2xl mx-auto">
             <h2 className="text-2xl font-bold mb-4">Import Historical Data</h2>
-            <p className="text-gray-600 mb-6">Upload your CSV file with columns: `transactionDate`, `originalAmount`, `description`, `category`. All amounts will be imported as HUF expenses.</p>
+            <p className="text-gray-600 mb-6">Upload your CSV file with columns: `transactionDate`, `originalAmount`, `category`, `description`. All amounts will be imported as HUF expenses.</p>
             
             <div className="mb-4">
                 <label className="block text-sm font-medium text-gray-700 mb-2">CSV File</label>
