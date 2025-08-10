@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, updateDoc, Timestamp, orderBy, limit, startAfter, getDocs, endBefore, limitToLast, writeBatch, where } from 'firebase/firestore';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 
 // --- Firebase Configuration ---
 let firebaseConfig;
@@ -311,7 +311,7 @@ function FinanceTracker({ user, onSignOut }) {
     }, [db]);
 
     const reportData = useMemo(() => {
-        if (!latestRates) return { totalExpense: 0, totalIncome: 0, netBalance: 0, expenseChartData: [], lineChartData: [] };
+        if (!latestRates) return { totalExpense: 0, totalIncome: 0, netBalance: 0, expenseChartData: [], trendChartData: [] };
         
         const conversionRate = latestRates[displayCurrency] || 1;
         const expenses = filteredTransactions.filter(t => t.type === 'Expense');
@@ -334,9 +334,9 @@ function FinanceTracker({ user, onSignOut }) {
             return acc;
         }, {});
 
-        const lineChartData = Object.values(monthlyData).sort((a, b) => a.month.localeCompare(b.month));
+        const trendChartData = Object.values(monthlyData).sort((a, b) => a.month.localeCompare(b.month));
 
-        return { totalExpense, totalIncome, netBalance: totalIncome - totalExpense, expenseChartData, lineChartData };
+        return { totalExpense, totalIncome, netBalance: totalIncome - totalExpense, expenseChartData, trendChartData };
     }, [filteredTransactions, displayCurrency, latestRates]);
 
     return (
@@ -371,7 +371,7 @@ function FinanceTracker({ user, onSignOut }) {
                             <MonthFilter availableMonths={availableMonths} selectedMonths={selectedMonths} onSelectionChange={setSelectedMonths} />
                             <CategoryFilter selectedCategories={selectedCategories} onSelectionChange={setSelectedCategories} />
                             <CategoryChart data={reportData.expenseChartData} currency={displayCurrency} />
-                            <LineChartComponent data={reportData.lineChartData} currency={displayCurrency} />
+                            <TrendChartComponent data={reportData.trendChartData} currency={displayCurrency} />
                             <TransactionList transactions={paginatedTransactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} onNextPage={() => setCurrentPage(p => Math.min(p + 1, totalPages))} onPrevPage={() => setCurrentPage(p => Math.max(p - 1, 1))} currentPage={currentPage} totalPages={totalPages} />
                         </div>
                     </div>
@@ -922,7 +922,7 @@ function CategoryChart({ data, currency }) {
     );
 }
 
-function LineChartComponent({ data, currency }) {
+function TrendChartComponent({ data, currency }) {
     const formatXAxis = (tickItem) => {
         return new Date(tickItem + '-02').toLocaleString('default', { month: 'short', year: 'numeric' });
     };
@@ -931,19 +931,19 @@ function LineChartComponent({ data, currency }) {
         <div className="bg-white p-6 rounded-lg shadow-md">
             <h2 className="text-2xl font-bold mb-4">Trends Over Time</h2>
             <div style={{ width: '100%', height: 300 }}>
-                {data.length > 1 ? (
+                {data.length > 0 ? (
                     <ResponsiveContainer>
-                        <LineChart data={data} margin={{ top: 5, right: 20, left: 20, bottom: 5 }}>
+                        <BarChart data={data} margin={{ top: 5, right: 20, left: 20, bottom: 5 }}>
                             <CartesianGrid strokeDasharray="3 3" />
                             <XAxis dataKey="month" tickFormatter={formatXAxis} />
                             <YAxis />
                             <Tooltip formatter={(value) => `${CURRENCY_SYMBOLS[currency] || ''}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} />
                             <Legend />
-                            <Line type="monotone" dataKey="expense" stroke="#ef4444" name="Expenses" dot={false} strokeWidth={2} />
-                            <Line type="monotone" dataKey="income" stroke="#22c55e" name="Income" dot={false} strokeWidth={2} />
-                        </LineChart>
+                            <Bar dataKey="expense" fill="#ef4444" name="Expenses" />
+                            <Bar dataKey="income" fill="#22c55e" name="Income" />
+                        </BarChart>
                     </ResponsiveContainer>
-                ) : <p className="text-center text-gray-500 pt-16">Not enough data to display a trend for this period.</p>}
+                ) : <p className="text-center text-gray-500 pt-16">No data to display a trend for this period.</p>}
             </div>
         </div>
     );
