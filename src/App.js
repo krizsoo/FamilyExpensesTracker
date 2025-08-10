@@ -534,12 +534,15 @@ function ImportPage({ db, showToast }) {
                     console.warn('Skipping invalid row:', row);
                     continue;
                 }
+                
+                const trimmedCategory = category ? category.trim() : 'Other';
+                const isIncome = INCOME_CATEGORIES.includes(trimmedCategory);
 
                 const newTransaction = {
-                    type: 'Expense',
+                    type: isIncome ? 'Income' : 'Expense',
                     originalAmount: amount,
                     originalCurrency: 'HUF',
-                    category: category || 'Other',
+                    category: trimmedCategory,
                     transactionDate: Timestamp.fromDate(date),
                     description: description || '',
                     baseCurrency: 'USD',
