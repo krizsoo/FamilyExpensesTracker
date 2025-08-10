@@ -414,9 +414,45 @@ function ImportPage({ db, showToast }) {
     const [file, setFile] = useState(null);
     const [isImporting, setIsImporting] = useState(false);
     const [progress, setProgress] = useState(0);
+    const [isWiping, setIsWiping] = useState(false);
 
     const handleFileChange = (e) => {
         setFile(e.target.files[0]);
+    };
+
+    const handleWipeData = async () => {
+        if (!db) {
+            showToast("Database not ready.", "error");
+            return;
+        }
+        if (!window.confirm("ARE YOU SURE? This will permanently delete all transactions and cannot be undone.")) {
+            return;
+        }
+
+        setIsWiping(true);
+        try {
+            const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
+            const collectionRef = collection(db, collectionPath);
+            const querySnapshot = await getDocs(query(collectionRef, limit(500)));
+            
+            let deletedCount = 0;
+            while(querySnapshot.size > 0) {
+                const batch = writeBatch(db);
+                querySnapshot.docs.forEach(doc => {
+                    batch.delete(doc.ref);
+                });
+                await batch.commit();
+                deletedCount += querySnapshot.size;
+                showToast(`Deleted ${deletedCount} transactions...`, "success");
+                const newSnapshot = await getDocs(query(collectionRef, limit(500)));
+                if(newSnapshot.size === 0) break;
+            }
+            showToast("All transactions have been wiped.", "success");
+        } catch (e) {
+            showToast(`Error wiping data: ${e.message}`, "error");
+        } finally {
+            setIsWiping(false);
+        }
     };
 
     const handleImport = async () => {
@@ -497,24 +533,33 @@ function ImportPage({ db, showToast }) {
     };
 
     return (
-        <div className="bg-white p-8 rounded-lg shadow-md max-w-2xl mx-auto">
-            <h2 className="text-2xl font-bold mb-4">Import Historical Data</h2>
-            <p className="text-gray-600 mb-6">Upload your CSV file with columns: `transactionDate`, `originalAmount`, `category`, `description`. All amounts will be imported as HUF expenses.</p>
-            
-            <div className="mb-4">
-                <label className="block text-sm font-medium text-gray-700 mb-2">CSV File</label>
-                <input type="file" accept=".csv" onChange={handleFileChange} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
-            </div>
-
-            <button onClick={handleImport} disabled={isImporting || !file} className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-md transition disabled:opacity-50 disabled:cursor-not-allowed">
-                {isImporting ? `Importing... ${progress}%` : 'Start Import'}
-            </button>
-
-            {isImporting && (
-                <div className="w-full bg-gray-200 rounded-full h-2.5 mt-4">
-                    <div className="bg-blue-600 h-2.5 rounded-full" style={{ width: `${progress}%` }}></div>
+        <div className="bg-white p-8 rounded-lg shadow-md max-w-2xl mx-auto space-y-8">
+            <div>
+                <h2 className="text-2xl font-bold mb-4">Import Historical Data</h2>
+                <p className="text-gray-600 mb-6">Upload your CSV file with columns: `transactionDate`, `originalAmount`, `category`, `description`. All amounts will be imported as HUF expenses.</p>
+                
+                <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">CSV File</label>
+                    <input type="file" accept=".csv" onChange={handleFileChange} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
                 </div>
-            )}
+
+                <button onClick={handleImport} disabled={isImporting || !file} className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-md transition disabled:opacity-50 disabled:cursor-not-allowed">
+                    {isImporting ? `Importing... ${progress}%` : 'Start Import'}
+                </button>
+
+                {isImporting && (
+                    <div className="w-full bg-gray-200 rounded-full h-2.5 mt-4">
+                        <div className="bg-blue-600 h-2.5 rounded-full" style={{ width: `${progress}%` }}></div>
+                    </div>
+                )}
+            </div>
+            <div className="border-t pt-8">
+                 <h2 className="text-2xl font-bold mb-4 text-red-600">Danger Zone</h2>
+                 <p className="text-gray-600 mb-6">This will permanently delete all transaction data from the database. This action cannot be undone.</p>
+                 <button onClick={handleWipeData} disabled={isWiping} className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md transition disabled:opacity-50 disabled:cursor-not-allowed">
+                    {isWiping ? 'Wiping Data...' : 'Wipe All Transactions'}
+                 </button>
+            </div>
         </div>
     );
 }
