@@ -421,23 +421,42 @@ function CategoryFilter({ selectedCategories, onSelectionChange }) {
 
     return (
         <div className="bg-white p-4 rounded-lg shadow-md">
-            <h3 className="text-lg font-bold mb-3">Filter by Category</h3>
-            <div className="flex flex-wrap gap-2">
-                <button
+            <div className="flex justify-between items-center mb-3">
+                 <h3 className="text-lg font-bold">Filter by Category</h3>
+                 <button
                     onClick={() => handleCategoryClick('All')}
                     className={`px-3 py-1 text-sm rounded-full transition ${selectedCategories.length === 0 ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
                 >
                     All
                 </button>
-                {EXPENSE_CATEGORIES.map(category => (
-                    <button
-                        key={category}
-                        onClick={() => handleCategoryClick(category)}
-                        className={`px-3 py-1 text-sm rounded-full transition ${selectedCategories.includes(category) ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
-                    >
-                        {category}
-                    </button>
-                ))}
+            </div>
+            <div>
+                <h4 className="text-sm font-semibold text-gray-500 mb-2">Expenses</h4>
+                <div className="flex flex-wrap gap-2">
+                    {EXPENSE_CATEGORIES.map(category => (
+                        <button
+                            key={category}
+                            onClick={() => handleCategoryClick(category)}
+                            className={`px-3 py-1 text-sm rounded-full transition ${selectedCategories.includes(category) ? 'bg-red-500 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                        >
+                            {category}
+                        </button>
+                    ))}
+                </div>
+            </div>
+            <div className="mt-4">
+                <h4 className="text-sm font-semibold text-gray-500 mb-2">Income</h4>
+                <div className="flex flex-wrap gap-2">
+                    {INCOME_CATEGORIES.map(category => (
+                        <button
+                            key={category}
+                            onClick={() => handleCategoryClick(category)}
+                            className={`px-3 py-1 text-sm rounded-full transition ${selectedCategories.includes(category) ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                        >
+                            {category}
+                        </button>
+                    ))}
+                </div>
             </div>
         </div>
     );
