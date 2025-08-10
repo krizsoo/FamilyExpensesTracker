@@ -426,7 +426,7 @@ function ImportPage({ db, showToast }) {
             const approxRateHufToUsd = 0.0027; // Using an approximate rate
 
             // Use Firestore batch writes for efficiency
-            const batch = writeBatch(db);
+            let batch = writeBatch(db);
             const collectionRef = collection(db, `artifacts/${appId}/families/${familyId}/transactions`);
 
             for (let i = 0; i < totalRecords; i++) {
