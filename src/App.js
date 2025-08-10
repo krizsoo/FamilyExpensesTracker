@@ -208,8 +208,14 @@ function FinanceTracker({ user, onSignOut }) {
         manageRateCache();
     }, []);
 
+    const getYearMonthLocal = (date) => {
+        const year = date.getFullYear();
+        const month = ('0' + (date.getMonth() + 1)).slice(-2);
+        return `${year}-${month}`;
+    };
+
     const availableMonths = useMemo(() => {
-        const months = new Set(allTransactions.map(t => t.transactionDate.toISOString().slice(0, 7)));
+        const months = new Set(allTransactions.map(t => getYearMonthLocal(t.transactionDate)));
         return Array.from(months).sort().reverse();
     }, [allTransactions]);
 
@@ -219,12 +225,6 @@ function FinanceTracker({ user, onSignOut }) {
             setInitialMonthSet(true);
         }
     }, [availableMonths, initialMonthSet]);
-
-    const getYearMonthLocal = (date) => {
-        const year = date.getFullYear();
-        const month = ('0' + (date.getMonth() + 1)).slice(-2);
-        return `${year}-${month}`;
-    };
 
     const filteredTransactions = useMemo(() => {
         let transactions = allTransactions;
@@ -971,7 +971,13 @@ function TransactionList({ transactions, onDelete, onEdit, displayCurrency, late
                     <tbody>
                         {transactions.map(t => {
                             const isExpense = t.type === 'Expense';
-                            const displayAmount = t.amountInBaseCurrency * conversionRate;
+                            let displayAmount;
+                            if (t.originalCurrency === displayCurrency) {
+                                displayAmount = t.originalAmount;
+                            } else {
+                                displayAmount = t.amountInBaseCurrency * conversionRate;
+                            }
+                            
                             return (
                                 <tr key={t.id} className="bg-white border-b hover:bg-gray-50">
                                     <td className="px-4 py-3">{t.transactionDate.toLocaleDateString()}</td>
