@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, updateDoc, Timestamp, orderBy, limit, startAfter, getDocs, endBefore, limitToLast, writeBatch, where } from 'firebase/firestore';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
 
 // --- Firebase Configuration ---
 let firebaseConfig;
@@ -137,20 +137,16 @@ function FinanceTracker({ user, onSignOut }) {
     const [db, setDb] = useState(null);
     const [page, setPage] = useState('dashboard');
     const [allTransactions, setAllTransactions] = useState([]);
-    const [paginatedTransactions, setPaginatedTransactions] = useState([]);
-    const [lastVisible, setLastVisible] = useState(null);
-    const [firstVisible, setFirstVisible] = useState(null);
-    const [isLastPage, setIsLastPage] = useState(false);
-    const [currentPage, setCurrentPage] = useState(1);
     const [recurringExpenses, setRecurringExpenses] = useState([]);
     const [displayCurrency, setDisplayCurrency] = useState('USD');
-    const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7));
+    const [selectedMonths, setSelectedMonths] = useState([]);
     const [selectedCategories, setSelectedCategories] = useState([]);
     const [latestRates, setLatestRates] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
     const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
     const [showConfirmModal, setShowConfirmModal] = useState({ show: false, id: null, type: '' });
     const [editingTransaction, setEditingTransaction] = useState(null);
+    const [currentPage, setCurrentPage] = useState(1);
 
     useEffect(() => {
         setDb(getFirestore(initializeApp(firebaseConfig)));
@@ -161,88 +157,15 @@ function FinanceTracker({ user, onSignOut }) {
         setTimeout(() => setToast({ show: false, message: '', type }), 4000);
     };
 
-    // --- Data Fetching Logic ---
-    const fetchPaginatedTransactions = useCallback(async (direction = 'initial', cursor = null) => {
-        if (!db) return;
-        setIsLoading(true);
-        try {
-            const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
-            const constraints = [];
-            
-            // Month filter
-            const year = parseInt(selectedMonth.split('-')[0]);
-            const month = parseInt(selectedMonth.split('-')[1]);
-            const startDate = new Date(year, month - 1, 1);
-            const endDate = new Date(year, month, 0, 23, 59, 59);
-            constraints.push(where("transactionDate", ">=", Timestamp.fromDate(startDate)));
-            constraints.push(where("transactionDate", "<=", Timestamp.fromDate(endDate)));
-
-            // Category filter
-            if (selectedCategories.length > 0) {
-                constraints.push(where('category', 'in', selectedCategories));
-            }
-
-            constraints.push(orderBy("transactionDate", "desc"));
-
-            if (direction === 'next' && cursor) {
-                constraints.push(startAfter(cursor));
-            } else if (direction === 'prev' && cursor) {
-                constraints.push(endBefore(cursor));
-                constraints.push(limitToLast(TRANSACTIONS_PER_PAGE));
-            } else {
-                constraints.push(limit(TRANSACTIONS_PER_PAGE));
-            }
-            
-            const q = query(collection(db, collectionPath), ...constraints);
-            const documentSnapshots = await getDocs(q);
-            const newTransactions = documentSnapshots.docs.map(doc => ({ id: doc.id, ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
-            
-            if (newTransactions.length > 0) {
-                setPaginatedTransactions(newTransactions);
-                setFirstVisible(documentSnapshots.docs[0]);
-                setLastVisible(documentSnapshots.docs[documentSnapshots.docs.length - 1]);
-                
-                const nextCheckConstraints = [...constraints.slice(0, -1), startAfter(documentSnapshots.docs[documentSnapshots.docs.length - 1]), limit(1)];
-                const nextQuery = query(collection(db, collectionPath), ...nextCheckConstraints);
-                const nextDocs = await getDocs(nextQuery);
-                setIsLastPage(nextDocs.empty);
-            } else {
-                 setPaginatedTransactions([]);
-                 setIsLastPage(true);
-            }
-            if(direction === 'initial') setCurrentPage(1);
-
-        } catch (error) {
-            console.error("Error fetching transactions:", error);
-            showToast("Could not load transactions.", "error");
-        } finally {
-            setIsLoading(false);
-        }
-    }, [db, selectedMonth, selectedCategories]);
-
+    // Listeners for all transactions and recurring expenses
     useEffect(() => {
         if (db) {
-            fetchPaginatedTransactions('initial');
-        }
-    }, [db, selectedMonth, selectedCategories, fetchPaginatedTransactions]);
-
-    const handleNextPage = () => {
-        setCurrentPage(p => p + 1);
-        fetchPaginatedTransactions('next', lastVisible);
-    };
-
-    const handlePrevPage = () => {
-        setCurrentPage(p => p - 1);
-        fetchPaginatedTransactions('prev', firstVisible);
-    };
-
-    // Listeners for summary and recurring
-    useEffect(() => {
-        if (db) {
-            const summaryQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/transactions`));
+            setIsLoading(true);
+            const summaryQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/transactions`), orderBy("transactionDate", "desc"));
             const unsubscribeSummary = onSnapshot(summaryQuery, (snapshot) => {
-                const data = snapshot.docs.map(doc => ({ ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
+                const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
                 setAllTransactions(data);
+                setIsLoading(false);
             });
 
             const recurringQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/recurring`), orderBy("createdAt", "desc"));
@@ -267,7 +190,6 @@ function FinanceTracker({ user, onSignOut }) {
                 const { date, rates } = JSON.parse(cachedData);
                 if (date === today) { setLatestRates(rates); return; }
             }
-            setIsLoading(true);
             try {
                 const url = `https://v6.exchangerate-api.com/v6/${EXCHANGE_RATE_API_KEY}/latest/USD`;
                 const response = await fetch(url);
@@ -280,12 +202,47 @@ function FinanceTracker({ user, onSignOut }) {
             } catch (e) {
                 showToast(`Could not update daily rates: ${e.message}`, 'error');
                 if (cachedData) setLatestRates(JSON.parse(cachedData).rates);
-            } finally {
-                setIsLoading(false);
             }
         };
         manageRateCache();
     }, []);
+
+    const availableMonths = useMemo(() => {
+        const months = new Set(allTransactions.map(t => t.transactionDate.toISOString().slice(0, 7)));
+        return Array.from(months).sort().reverse();
+    }, [allTransactions]);
+
+    useEffect(() => {
+        if (availableMonths.length > 0 && selectedMonths.length === 0) {
+            setSelectedMonths([availableMonths[0]]);
+        }
+    }, [availableMonths, selectedMonths]);
+
+    const filteredTransactions = useMemo(() => {
+        let transactions = allTransactions;
+
+        if (selectedMonths.length > 0) {
+            transactions = transactions.filter(t => selectedMonths.includes(t.transactionDate.toISOString().slice(0, 7)));
+        }
+
+        if (selectedCategories.length > 0) {
+            transactions = transactions.filter(t => selectedCategories.includes(t.category));
+        }
+
+        return transactions;
+    }, [allTransactions, selectedMonths, selectedCategories]);
+    
+    const paginatedTransactions = useMemo(() => {
+        const startIndex = (currentPage - 1) * TRANSACTIONS_PER_PAGE;
+        const endIndex = startIndex + TRANSACTIONS_PER_PAGE;
+        return filteredTransactions.slice(startIndex, endIndex);
+    }, [filteredTransactions, currentPage]);
+
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [selectedMonths, selectedCategories]);
+
+    const totalPages = Math.ceil(filteredTransactions.length / TRANSACTIONS_PER_PAGE);
 
     const addTransaction = useCallback(async (data) => {
         if (!db || !latestRates) { showToast("Data not ready, please try again.", "error"); return; }
@@ -297,9 +254,8 @@ function FinanceTracker({ user, onSignOut }) {
             const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
             await addDoc(collection(db, collectionPath), { ...data, originalAmount: parseFloat(originalAmount), transactionDate: Timestamp.fromDate(new Date(data.transactionDate)), baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase), createdAt: Timestamp.now() });
             showToast(`${data.type} added successfully!`);
-            fetchPaginatedTransactions('initial');
         } catch (e) { showToast(`Failed to add transaction: ${e.message}`, 'error'); } finally { setIsLoading(false); }
-    }, [db, latestRates, fetchPaginatedTransactions]);
+    }, [db, latestRates]);
 
     const updateTransaction = useCallback(async (updatedData) => {
         if (!db || !editingTransaction || !latestRates) { showToast("Data not ready, please try again.", "error"); return; }
@@ -313,9 +269,8 @@ function FinanceTracker({ user, onSignOut }) {
             await updateDoc(docRef, payload);
             showToast("Transaction updated!");
             setEditingTransaction(null);
-            fetchPaginatedTransactions('initial');
         } catch (e) { showToast(`Update failed: ${e.message}`, 'error'); } finally { setIsLoading(false); }
-    }, [db, editingTransaction, latestRates, fetchPaginatedTransactions]);
+    }, [db, editingTransaction, latestRates]);
 
     const requestDelete = (id, type) => setShowConfirmModal({ show: true, id, type });
     
@@ -329,7 +284,6 @@ function FinanceTracker({ user, onSignOut }) {
         try {
             await deleteDoc(doc(db, `artifacts/${appId}/families/${familyId}/${collectionName}`, idToDelete));
             showToast(`${type.charAt(0).toUpperCase() + type.slice(1)} deleted.`);
-            if(type === 'transaction') fetchPaginatedTransactions('initial');
         } catch (e) { showToast(`Failed to delete: ${e.message}`, 'error'); } 
         finally { 
             setIsLoading(false); 
@@ -348,23 +302,34 @@ function FinanceTracker({ user, onSignOut }) {
         finally { setIsLoading(false); }
     }, [db]);
 
-    const summaryData = useMemo(() => {
-        if (!latestRates) return { totalExpense: 0, totalIncome: 0, netBalance: 0, expenseChartData: [] };
+    const reportData = useMemo(() => {
+        if (!latestRates) return { totalExpense: 0, totalIncome: 0, netBalance: 0, expenseChartData: [], lineChartData: [] };
         
-        let filteredForSummary = allTransactions.filter(t => t.transactionDate.toISOString().slice(0, 7) === selectedMonth);
-        if (selectedCategories.length > 0) {
-            filteredForSummary = filteredForSummary.filter(t => selectedCategories.includes(t.category));
-        }
-
         const conversionRate = latestRates[displayCurrency] || 1;
-        const expenses = filteredForSummary.filter(t => t.type === 'Expense');
-        const income = filteredForSummary.filter(t => t.type === 'Income');
+        const expenses = filteredTransactions.filter(t => t.type === 'Expense');
+        const income = filteredTransactions.filter(t => t.type === 'Income');
         const totalExpense = expenses.reduce((acc, t) => acc + t.amountInBaseCurrency, 0) * conversionRate;
         const totalIncome = income.reduce((acc, t) => acc + t.amountInBaseCurrency, 0) * conversionRate;
         const expenseByCategory = expenses.reduce((acc, t) => { acc[t.category] = (acc[t.category] || 0) + (t.amountInBaseCurrency * conversionRate); return acc; }, {});
         const expenseChartData = Object.entries(expenseByCategory).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
-        return { totalExpense, totalIncome, netBalance: totalIncome - totalExpense, expenseChartData };
-    }, [allTransactions, displayCurrency, latestRates, selectedMonth, selectedCategories]);
+        
+        const dailyData = filteredTransactions.reduce((acc, t) => {
+            const date = t.transactionDate.toISOString().slice(0, 10); // YYYY-MM-DD
+            if (!acc[date]) {
+                acc[date] = { date, expense: 0, income: 0 };
+            }
+            if (t.type === 'Expense') {
+                acc[date].expense += t.amountInBaseCurrency * conversionRate;
+            } else {
+                acc[date].income += t.amountInBaseCurrency * conversionRate;
+            }
+            return acc;
+        }, {});
+
+        const lineChartData = Object.values(dailyData).sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        return { totalExpense, totalIncome, netBalance: totalIncome - totalExpense, expenseChartData, lineChartData };
+    }, [filteredTransactions, displayCurrency, latestRates]);
 
     return (
         <div className="bg-gray-100 min-h-screen font-sans text-gray-800">
@@ -390,8 +355,17 @@ function FinanceTracker({ user, onSignOut }) {
             <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
                 {page === 'dashboard' && (
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                        <div className="lg:col-span-1 space-y-8"><TransactionForm onSubmit={addTransaction} /><SummaryReport summary={summaryData} currency={displayCurrency} onCurrencyChange={setDisplayCurrency} selectedMonth={selectedMonth} onMonthChange={setSelectedMonth} /></div>
-                        <div className="lg:col-span-2 space-y-8"><CategoryFilter selectedCategories={selectedCategories} onSelectionChange={setSelectedCategories} /><CategoryChart data={summaryData.expenseChartData} currency={displayCurrency} /><TransactionList transactions={paginatedTransactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} onNextPage={handleNextPage} onPrevPage={handlePrevPage} currentPage={currentPage} isLastPage={isLastPage} /></div>
+                        <div className="lg:col-span-1 space-y-8">
+                            <TransactionForm onSubmit={addTransaction} />
+                            <SummaryReport summary={reportData} currency={displayCurrency} onCurrencyChange={setDisplayCurrency} />
+                        </div>
+                        <div className="lg:col-span-2 space-y-8">
+                            <MonthFilter availableMonths={availableMonths} selectedMonths={selectedMonths} onSelectionChange={setSelectedMonths} />
+                            <CategoryFilter selectedCategories={selectedCategories} onSelectionChange={setSelectedCategories} />
+                            <CategoryChart data={reportData.expenseChartData} currency={displayCurrency} />
+                            <LineChartComponent data={reportData.lineChartData} currency={displayCurrency} />
+                            <TransactionList transactions={paginatedTransactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} onNextPage={() => setCurrentPage(p => Math.min(p + 1, totalPages))} onPrevPage={() => setCurrentPage(p => Math.max(p - 1, 1))} currentPage={currentPage} totalPages={totalPages} />
+                        </div>
                     </div>
                 )}
                 {page === 'recurring' && (
@@ -406,6 +380,45 @@ function FinanceTracker({ user, onSignOut }) {
 }
 
 // --- Child Components ---
+
+function MonthFilter({ availableMonths, selectedMonths, onSelectionChange }) {
+    const handleMonthClick = (month) => {
+        if (month === 'All') {
+            onSelectionChange([]);
+            return;
+        }
+        const newSelection = selectedMonths.includes(month)
+            ? selectedMonths.filter(m => m !== month)
+            : [...selectedMonths, month];
+        onSelectionChange(newSelection);
+    };
+
+    return (
+        <div className="bg-white p-4 rounded-lg shadow-md">
+            <div className="flex justify-between items-center mb-3">
+                 <h3 className="text-lg font-bold">Filter by Month</h3>
+                 <button
+                    onClick={() => handleMonthClick('All')}
+                    className={`px-3 py-1 text-sm rounded-full transition ${selectedMonths.length === 0 ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                >
+                    All Months
+                </button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+                {availableMonths.map(month => (
+                    <button
+                        key={month}
+                        onClick={() => handleMonthClick(month)}
+                        className={`px-3 py-1 text-sm rounded-full transition ${selectedMonths.includes(month) ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                    >
+                        {new Date(month + '-02').toLocaleString('default', { month: 'long', year: 'numeric' })}
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+}
+
 
 function CategoryFilter({ selectedCategories, onSelectionChange }) {
     const handleCategoryClick = (category) => {
@@ -848,21 +861,17 @@ function EditModal({ transaction, onSave, onCancel }) {
 }
 
 
-function SummaryReport({ summary, currency, onCurrencyChange, selectedMonth, onMonthChange }) {
+function SummaryReport({ summary, currency, onCurrencyChange }) {
     const formatCurrency = (value) => `${CURRENCY_SYMBOLS[currency] || ''}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     return (
         <div className="bg-white p-6 rounded-lg shadow-md">
             <div className="flex justify-between items-center mb-4">
                 <h2 className="text-2xl font-bold">Summary</h2>
-                <input type="month" value={selectedMonth} onChange={e => onMonthChange(e.target.value)} className="px-3 py-1 border-gray-300 rounded-md shadow-sm" />
+                 <select value={currency} onChange={e => onCurrencyChange(e.target.value)} className="px-3 py-1 border-gray-300 rounded-md shadow-sm">
+                    <option>USD</option> <option>EUR</option> <option>GBP</option> <option>HUF</option>
+                </select>
             </div>
             <div className="space-y-3">
-                 <div className="flex justify-between items-center">
-                    <span className="font-medium">Currency:</span>
-                    <select value={currency} onChange={e => onCurrencyChange(e.target.value)} className="px-3 py-1 border-gray-300 rounded-md shadow-sm">
-                        <option>USD</option> <option>EUR</option> <option>GBP</option> <option>HUF</option>
-                    </select>
-                </div>
                 <div className="flex justify-between items-center"><span className="font-medium text-green-600">Total Income:</span><span className="font-semibold text-green-600">{formatCurrency(summary.totalIncome)}</span></div>
                 <div className="flex justify-between items-center"><span className="font-medium text-red-600">Total Expenses:</span><span className="font-semibold text-red-600">{formatCurrency(summary.totalExpense)}</span></div>
                 <hr/>
@@ -887,13 +896,41 @@ function CategoryChart({ data, currency }) {
                             <Legend />
                         </PieChart>
                     </ResponsiveContainer>
-                ) : <p className="text-center text-gray-500 pt-16">No expense data to display for this month.</p>}
+                ) : <p className="text-center text-gray-500 pt-16">No expense data to display for this period.</p>}
             </div>
         </div>
     );
 }
 
-function TransactionList({ transactions, onDelete, onEdit, displayCurrency, latestRates, onNextPage, onPrevPage, currentPage, isLastPage }) {
+function LineChartComponent({ data, currency }) {
+    const formatXAxis = (tickItem) => {
+        return new Date(tickItem).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+    };
+
+    return (
+        <div className="bg-white p-6 rounded-lg shadow-md">
+            <h2 className="text-2xl font-bold mb-4">Trends Over Time</h2>
+            <div style={{ width: '100%', height: 300 }}>
+                {data.length > 1 ? (
+                    <ResponsiveContainer>
+                        <LineChart data={data} margin={{ top: 5, right: 20, left: 20, bottom: 5 }}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="date" tickFormatter={formatXAxis} />
+                            <YAxis />
+                            <Tooltip formatter={(value) => `${CURRENCY_SYMBOLS[currency] || ''}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} />
+                            <Legend />
+                            <Line type="monotone" dataKey="expense" stroke="#ef4444" name="Expenses" dot={false} strokeWidth={2} />
+                            <Line type="monotone" dataKey="income" stroke="#22c55e" name="Income" dot={false} strokeWidth={2} />
+                        </LineChart>
+                    </ResponsiveContainer>
+                ) : <p className="text-center text-gray-500 pt-16">Not enough data to display a trend for this period.</p>}
+            </div>
+        </div>
+    );
+}
+
+
+function TransactionList({ transactions, onDelete, onEdit, displayCurrency, latestRates, onNextPage, onPrevPage, currentPage, totalPages }) {
     const conversionRate = latestRates ? latestRates[displayCurrency] || 1 : 1;
     const formatCurrency = (value) => `${CURRENCY_SYMBOLS[displayCurrency] || ''}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     
@@ -938,8 +975,8 @@ function TransactionList({ transactions, onDelete, onEdit, displayCurrency, late
             </div>
              <div className="flex justify-between items-center mt-4">
                 <button onClick={onPrevPage} disabled={currentPage === 1} className="px-4 py-2 bg-gray-300 text-gray-800 rounded-md disabled:opacity-50 disabled:cursor-not-allowed">Previous</button>
-                <span className="text-sm text-gray-700">Page {currentPage}</span>
-                <button onClick={onNextPage} disabled={isLastPage} className="px-4 py-2 bg-gray-300 text-gray-800 rounded-md disabled:opacity-50 disabled:cursor-not-allowed">Next</button>
+                <span className="text-sm text-gray-700">Page {currentPage} of {totalPages || 1}</span>
+                <button onClick={onNextPage} disabled={currentPage >= totalPages} className="px-4 py-2 bg-gray-300 text-gray-800 rounded-md disabled:opacity-50 disabled:cursor-not-allowed">Next</button>
             </div>
         </div>
     );
