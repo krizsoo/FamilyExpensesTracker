@@ -134,18 +134,21 @@ function AuthScreen({ auth }) {
 // --- Main Application Logic Component ---
 function FinanceTracker({ user, onSignOut }) {
     const [db, setDb] = useState(null);
+    const [page, setPage] = useState('dashboard'); // 'dashboard' or 'recurring'
     const [transactions, setTransactions] = useState([]);
+    const [recurringExpenses, setRecurringExpenses] = useState([]);
     const [displayCurrency, setDisplayCurrency] = useState('USD');
     const [latestRates, setLatestRates] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
     const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
-    const [showConfirmModal, setShowConfirmModal] = useState({ show: false, id: null });
+    const [showConfirmModal, setShowConfirmModal] = useState({ show: false, id: null, type: '' });
     const [editingTransaction, setEditingTransaction] = useState(null);
 
     useEffect(() => {
         setDb(getFirestore(initializeApp(firebaseConfig)));
     }, []);
 
+    // Effect for fetching transactions
     useEffect(() => {
         if (!db) return;
         setIsLoading(true);
@@ -158,6 +161,19 @@ function FinanceTracker({ user, onSignOut }) {
         }, (err) => console.error("Firestore error:", err));
         return () => unsubscribe();
     }, [db]);
+
+    // Effect for fetching recurring expenses
+    useEffect(() => {
+        if (!db) return;
+        const collectionPath = `artifacts/${appId}/families/${familyId}/recurring`;
+        const q = query(collection(db, collectionPath), orderBy("createdAt", "desc"));
+        const unsubscribe = onSnapshot(q, (querySnapshot) => {
+            const data = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setRecurringExpenses(data);
+        }, (err) => console.error("Firestore recurring error:", err));
+        return () => unsubscribe();
+    }, [db]);
+
 
     useEffect(() => {
         const manageRateCache = async () => {
@@ -221,16 +237,35 @@ function FinanceTracker({ user, onSignOut }) {
         } catch (e) { showToast(`Update failed: ${e.message}`, 'error'); } finally { setIsLoading(false); }
     }, [db, editingTransaction, latestRates]);
 
-    const requestDeleteTransaction = (id) => setShowConfirmModal({ show: true, id });
+    const requestDelete = (id, type) => setShowConfirmModal({ show: true, id, type });
+    
     const handleConfirmDelete = async () => {
-        const idToDelete = showConfirmModal.id;
+        const { id: idToDelete, type } = showConfirmModal;
         if (!db || !idToDelete) return;
+        
+        const collectionName = type === 'transaction' ? 'transactions' : 'recurring';
+        
         setIsLoading(true);
         try {
-            await deleteDoc(doc(db, `artifacts/${appId}/families/${familyId}/transactions`, idToDelete));
-            showToast("Transaction deleted.");
-        } catch (e) { showToast(`Failed to delete: ${e.message}`, 'error'); } finally { setIsLoading(false); setShowConfirmModal({ show: false, id: null }); }
+            await deleteDoc(doc(db, `artifacts/${appId}/families/${familyId}/${collectionName}`, idToDelete));
+            showToast(`${type.charAt(0).toUpperCase() + type.slice(1)} deleted.`);
+        } catch (e) { showToast(`Failed to delete: ${e.message}`, 'error'); } 
+        finally { 
+            setIsLoading(false); 
+            setShowConfirmModal({ show: false, id: null, type: '' });
+        }
     };
+
+    const addRecurringExpense = useCallback(async (data) => {
+        if (!db) { showToast("Database not ready", "error"); return; }
+        setIsLoading(true);
+        try {
+            const collectionPath = `artifacts/${appId}/families/${familyId}/recurring`;
+            await addDoc(collection(db, collectionPath), { ...data, originalAmount: parseFloat(data.originalAmount), type: 'Expense', createdAt: Timestamp.now() });
+            showToast('Recurring expense added!');
+        } catch(e) { showToast(`Failed to add: ${e.message}`, 'error'); }
+        finally { setIsLoading(false); }
+    }, [db]);
 
     const summaryData = useMemo(() => {
         if (!latestRates) return { totalExpense: 0, totalIncome: 0, netBalance: 0, expenseChartData: [] };
@@ -248,25 +283,115 @@ function FinanceTracker({ user, onSignOut }) {
         <div className="bg-gray-100 min-h-screen font-sans text-gray-800">
             {isLoading && <div className="fixed inset-0 bg-white bg-opacity-70 z-40"><LoadingSpinner /></div>}
             {toast.show && <Toast message={toast.message} type={toast.type} onClose={() => setToast(t => ({ ...t, show: false }))} />}
-            {showConfirmModal.show && <ConfirmationModal message="Are you sure you want to permanently delete this transaction?" onConfirm={handleConfirmDelete} onCancel={() => setShowConfirmModal({ show: false, id: null })} />}
+            {showConfirmModal.show && <ConfirmationModal message={`Are you sure you want to permanently delete this ${showConfirmModal.type}?`} onConfirm={handleConfirmDelete} onCancel={() => setShowConfirmModal({ show: false, id: null, type: '' })} />}
             {editingTransaction && <EditModal transaction={editingTransaction} onSave={updateTransaction} onCancel={() => setEditingTransaction(null)} />}
+            
             <header className="bg-white shadow-md">
                 <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
-                    <h1 className="text-3xl font-bold text-blue-600">Family Finance Tracker</h1>
+                    <div className="flex items-center space-x-4">
+                         <h1 className="text-3xl font-bold text-blue-600">Family Finance</h1>
+                         <nav className="flex space-x-2 rounded-lg bg-gray-200 p-1">
+                            <button onClick={() => setPage('dashboard')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'dashboard' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Dashboard</button>
+                            <button onClick={() => setPage('recurring')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'recurring' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Recurring</button>
+                         </nav>
+                    </div>
                     <button onClick={onSignOut} className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-md transition">Sign Out</button>
                 </div>
             </header>
+
             <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                    <div className="lg:col-span-1 space-y-8"><TransactionForm onSubmit={addTransaction} /><SummaryReport summary={summaryData} currency={displayCurrency} onCurrencyChange={setDisplayCurrency} /></div>
-                    <div className="lg:col-span-2 space-y-8"><CategoryChart data={summaryData.expenseChartData} currency={displayCurrency} /><TransactionList transactions={transactions} onDelete={requestDeleteTransaction} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} /></div>
-                </div>
+                {page === 'dashboard' ? (
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        <div className="lg:col-span-1 space-y-8"><TransactionForm onSubmit={addTransaction} /><SummaryReport summary={summaryData} currency={displayCurrency} onCurrencyChange={setDisplayCurrency} /></div>
+                        <div className="lg:col-span-2 space-y-8"><CategoryChart data={summaryData.expenseChartData} currency={displayCurrency} /><TransactionList transactions={transactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} /></div>
+                    </div>
+                ) : (
+                    <RecurringPage expenses={recurringExpenses} onAdd={addRecurringExpense} onDelete={(id) => requestDelete(id, 'recurring')} />
+                )}
             </main>
         </div>
     );
 }
 
-// --- Child Components (TransactionForm, EditModal, SummaryReport, etc.) ---
+// --- Child Components ---
+
+function RecurringPage({ expenses, onAdd, onDelete }) {
+    return (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="md:col-span-1">
+                <RecurringExpenseForm onSubmit={onAdd} />
+            </div>
+            <div className="md:col-span-2">
+                <div className="bg-white p-6 rounded-lg shadow-md">
+                    <h2 className="text-2xl font-bold mb-4">Recurring Monthly Expenses</h2>
+                    <div className="space-y-3">
+                        {expenses.length === 0 && <p className="text-center text-gray-500 py-8">No recurring expenses defined yet.</p>}
+                        {expenses.map(exp => (
+                            <div key={exp.id} className="flex justify-between items-center p-3 rounded-lg hover:bg-gray-50 border">
+                                <div>
+                                    <p className="font-semibold">{exp.description}</p>
+                                    <p className="text-sm text-gray-500">{exp.category}</p>
+                                </div>
+                                <div className="flex items-center space-x-4">
+                                     <p className="font-mono text-red-500">{CURRENCY_SYMBOLS[exp.originalCurrency] || ''}{exp.originalAmount.toLocaleString()}</p>
+                                     <button onClick={() => onDelete(exp.id)} className="text-gray-400 hover:text-red-600"><TrashIcon /></button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function RecurringExpenseForm({ onSubmit }) {
+    const [description, setDescription] = useState('');
+    const [amount, setAmount] = useState('');
+    const [currency, setCurrency] = useState('USD');
+    const [category, setCategory] = useState(EXPENSE_CATEGORIES[0]);
+
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!description || !amount) return;
+        onSubmit({ description, originalAmount: amount, originalCurrency: currency, category });
+        setDescription('');
+        setAmount('');
+    };
+
+    return (
+        <div className="bg-white p-6 rounded-lg shadow-md">
+            <h2 className="text-2xl font-bold mb-4">Add Recurring Expense</h2>
+            <form onSubmit={handleSubmit} className="space-y-4">
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">Description</label>
+                    <input type="text" value={description} onChange={e => setDescription(e.target.value)} required className="mt-1 block w-full px-3 py-2 border-gray-300 rounded-md shadow-sm" />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700">Amount</label>
+                        <input type="number" value={amount} onChange={e => setAmount(e.target.value)} step="0.01" required className="mt-1 block w-full px-3 py-2 border-gray-300 rounded-md shadow-sm" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700">Currency</label>
+                        <select value={currency} onChange={e => setCurrency(e.target.value)} className="mt-1 block w-full px-3 py-2 border-gray-300 rounded-md shadow-sm">
+                            <option>USD</option> <option>EUR</option> <option>GBP</option> <option>HUF</option>
+                        </select>
+                    </div>
+                </div>
+                 <div>
+                    <label className="block text-sm font-medium text-gray-700">Category</label>
+                    <select value={category} onChange={e => setCategory(e.target.value)} className="mt-1 block w-full px-3 py-2 border-gray-300 rounded-md shadow-sm">
+                        {EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                    </select>
+                </div>
+                <button type="submit" className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-md transition">Add Recurring</button>
+            </form>
+        </div>
+    );
+}
+
+
 function TransactionForm({ onSubmit }) {
     const [type, setType] = useState('Expense');
     const [amount, setAmount] = useState('');
@@ -481,7 +606,7 @@ function TransactionList({ transactions, onDelete, onEdit, displayCurrency, late
                                     <td className="px-4 py-3 text-right">
                                         <div className="flex justify-end space-x-3">
                                             <button onClick={() => onEdit(t)} className="text-gray-400 hover:text-blue-600"><PencilIcon/></button>
-                                            <button onClick={() => onDelete(t.id)} className="text-gray-400 hover:text-red-600"><TrashIcon/></button>
+                                            <button onClick={() => onDelete(t.id, 'transaction')} className="text-gray-400 hover:text-red-600"><TrashIcon/></button>
                                         </div>
                                     </td>
                                 </tr>
