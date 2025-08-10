@@ -433,22 +433,28 @@ function ImportPage({ db, showToast }) {
         try {
             const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
             const collectionRef = collection(db, collectionPath);
-            const querySnapshot = await getDocs(query(collectionRef, limit(500)));
-            
             let deletedCount = 0;
-            while(querySnapshot.size > 0) {
+
+            while (true) {
+                const q = query(collectionRef, limit(500));
+                const querySnapshot = await getDocs(q);
+
+                if (querySnapshot.size === 0) {
+                    break; 
+                }
+
                 const batch = writeBatch(db);
                 querySnapshot.docs.forEach(doc => {
                     batch.delete(doc.ref);
                 });
                 await batch.commit();
+
                 deletedCount += querySnapshot.size;
                 showToast(`Deleted ${deletedCount} transactions...`, "success");
-                const newSnapshot = await getDocs(query(collectionRef, limit(500)));
-                if(newSnapshot.size === 0) break;
             }
             showToast("All transactions have been wiped.", "success");
         } catch (e) {
+            console.error("Error wiping data:", e);
             showToast(`Error wiping data: ${e.message}`, "error");
         } finally {
             setIsWiping(false);
@@ -522,7 +528,7 @@ function ImportPage({ db, showToast }) {
                 }
             }
 
-            if (importedCount % 500 !== 0) {
+            if (importedCount > 0 && importedCount % 500 !== 0) {
                 await batch.commit(); // Commit the final batch
             }
             
