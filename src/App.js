@@ -313,20 +313,20 @@ function FinanceTracker({ user, onSignOut }) {
         const expenseByCategory = expenses.reduce((acc, t) => { acc[t.category] = (acc[t.category] || 0) + (t.amountInBaseCurrency * conversionRate); return acc; }, {});
         const expenseChartData = Object.entries(expenseByCategory).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
         
-        const dailyData = filteredTransactions.reduce((acc, t) => {
-            const date = t.transactionDate.toISOString().slice(0, 10); // YYYY-MM-DD
-            if (!acc[date]) {
-                acc[date] = { date, expense: 0, income: 0 };
+        const monthlyData = filteredTransactions.reduce((acc, t) => {
+            const month = t.transactionDate.toISOString().slice(0, 7); // YYYY-MM
+            if (!acc[month]) {
+                acc[month] = { month, expense: 0, income: 0 };
             }
             if (t.type === 'Expense') {
-                acc[date].expense += t.amountInBaseCurrency * conversionRate;
+                acc[month].expense += t.amountInBaseCurrency * conversionRate;
             } else {
-                acc[date].income += t.amountInBaseCurrency * conversionRate;
+                acc[month].income += t.amountInBaseCurrency * conversionRate;
             }
             return acc;
         }, {});
 
-        const lineChartData = Object.values(dailyData).sort((a, b) => new Date(a.date) - new Date(b.date));
+        const lineChartData = Object.values(monthlyData).sort((a, b) => a.month.localeCompare(b.month));
 
         return { totalExpense, totalIncome, netBalance: totalIncome - totalExpense, expenseChartData, lineChartData };
     }, [filteredTransactions, displayCurrency, latestRates]);
@@ -904,7 +904,7 @@ function CategoryChart({ data, currency }) {
 
 function LineChartComponent({ data, currency }) {
     const formatXAxis = (tickItem) => {
-        return new Date(tickItem).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+        return new Date(tickItem + '-02').toLocaleString('default', { month: 'short', year: 'numeric' });
     };
 
     return (
@@ -915,7 +915,7 @@ function LineChartComponent({ data, currency }) {
                     <ResponsiveContainer>
                         <LineChart data={data} margin={{ top: 5, right: 20, left: 20, bottom: 5 }}>
                             <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis dataKey="date" tickFormatter={formatXAxis} />
+                            <XAxis dataKey="month" tickFormatter={formatXAxis} />
                             <YAxis />
                             <Tooltip formatter={(value) => `${CURRENCY_SYMBOLS[currency] || ''}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} />
                             <Legend />
