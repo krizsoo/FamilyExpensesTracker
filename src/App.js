@@ -424,10 +424,18 @@ function FinanceTracker({ user, onSignOut }) {
             if (!acc[month]) {
                 acc[month] = { month, expense: 0, income: 0 };
             }
-            if (t.type === 'Expense') {
-                acc[month].expense += t.amountInBaseCurrency * conversionRate;
+            
+            let amount;
+            if (t.originalCurrency === displayCurrency) {
+                amount = t.originalAmount;
             } else {
-                acc[month].income += t.amountInBaseCurrency * conversionRate;
+                amount = t.amountInBaseCurrency * conversionRate;
+            }
+
+            if (t.type === 'Expense') {
+                acc[month].expense += amount;
+            } else {
+                acc[month].income += amount;
             }
             return acc;
         }, {});
