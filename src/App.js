@@ -34,6 +34,24 @@ const ConfirmationModal = ({ message, onConfirm, onCancel }) => (<div className=
 const TrashIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>);
 const PencilIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.5L15.232 5.232z" /></svg>);
 const SortIcon = ({ direction }) => direction ? (direction === 'asc' ? ' ▲' : ' ▼') : null;
+const ChevronDown = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"></path></svg>;
+const ChevronUp = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7"></path></svg>;
+
+const CollapsibleCard = ({ title, children, defaultOpen = false }) => {
+    const [isOpen, setIsOpen] = useState(defaultOpen);
+    return (
+        <div className="bg-white rounded-lg shadow-md">
+            <button
+                onClick={() => setIsOpen(!isOpen)}
+                className="w-full flex justify-between items-center p-4 font-bold text-lg"
+            >
+                <span>{title}</span>
+                {isOpen ? <ChevronUp /> : <ChevronDown />}
+            </button>
+            {isOpen && <div className="p-4 border-t">{children}</div>}
+        </div>
+    );
+};
 
 // --- Main App Component ---
 export default function App() {
@@ -138,10 +156,11 @@ function FinanceTracker({ user, onSignOut }) {
     const [db, setDb] = useState(null);
     const [page, setPage] = useState('dashboard');
     const [allTransactions, setAllTransactions] = useState([]);
-    const [recurringExpenses, setRecurringExpenses] = useState([]);
+    const [recurringItems, setRecurringItems] = useState([]);
     const [displayCurrency, setDisplayCurrency] = useState(localStorage.getItem('lastReportCurrency') || 'USD');
     const [selectedMonths, setSelectedMonths] = useState([]);
     const [selectedCategories, setSelectedCategories] = useState([]);
+    const [descriptionFilter, setDescriptionFilter] = useState("");
     const [latestRates, setLatestRates] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
     const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
@@ -179,7 +198,7 @@ function FinanceTracker({ user, onSignOut }) {
             const recurringQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/recurring`), orderBy("createdAt", "desc"));
             const unsubscribeRecurring = onSnapshot(recurringQuery, (snapshot) => {
                 const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                setRecurringExpenses(data);
+                setRecurringItems(data);
             });
 
             return () => {
@@ -244,6 +263,10 @@ function FinanceTracker({ user, onSignOut }) {
             transactions = transactions.filter(t => selectedCategories.includes(t.category));
         }
         
+        if (descriptionFilter) {
+            transactions = transactions.filter(t => t.description.toLowerCase().includes(descriptionFilter.toLowerCase()));
+        }
+        
         // Sorting logic
         transactions.sort((a, b) => {
             let aValue = a[sortConfig.key];
@@ -267,7 +290,7 @@ function FinanceTracker({ user, onSignOut }) {
         });
 
         return transactions;
-    }, [allTransactions, selectedMonths, selectedCategories, sortConfig, displayCurrency, latestRates]);
+    }, [allTransactions, selectedMonths, selectedCategories, descriptionFilter, sortConfig, displayCurrency, latestRates]);
     
     const paginatedTransactions = useMemo(() => {
         const startIndex = (currentPage - 1) * TRANSACTIONS_PER_PAGE;
@@ -277,7 +300,7 @@ function FinanceTracker({ user, onSignOut }) {
 
     useEffect(() => {
         setCurrentPage(1);
-    }, [selectedMonths, selectedCategories]);
+    }, [selectedMonths, selectedCategories, descriptionFilter]);
 
     const totalPages = Math.ceil(filteredTransactions.length / TRANSACTIONS_PER_PAGE);
 
@@ -345,7 +368,7 @@ function FinanceTracker({ user, onSignOut }) {
         const currentMonthStr = new Date().toISOString().slice(0, 7);
         const currentMonthTransactions = allTransactions.filter(t => getYearMonthLocal(t.transactionDate) === currentMonthStr);
         
-        const toAdd = recurringExpenses.filter(recurring => 
+        const toAdd = recurringItems.filter(recurring => 
             !currentMonthTransactions.some(t => t.description === recurring.description)
         );
 
@@ -383,7 +406,7 @@ function FinanceTracker({ user, onSignOut }) {
         } finally {
             setIsLoading(false);
         }
-    }, [db, latestRates, allTransactions, recurringExpenses]);
+    }, [db, latestRates, allTransactions, recurringItems]);
 
     const reportData = useMemo(() => {
         if (!latestRates) return { totalExpense: 0, totalIncome: 0, netBalance: 0, expenseChartData: [], trendChartData: [] };
@@ -457,19 +480,25 @@ function FinanceTracker({ user, onSignOut }) {
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                         <div className="lg:col-span-1 space-y-8">
                             <TransactionForm onSubmit={addTransaction} allTransactions={allTransactions} />
-                            <SummaryReport summary={reportData} currency={displayCurrency} onCurrencyChange={setDisplayCurrency} />
+                             <CollapsibleCard title="Summary">
+                                <SummaryReport summary={reportData} currency={displayCurrency} onCurrencyChange={setDisplayCurrency} />
+                            </CollapsibleCard>
                         </div>
                         <div className="lg:col-span-2 space-y-8">
-                            <MonthFilter availableMonths={availableMonths} selectedMonths={selectedMonths} onSelectionChange={setSelectedMonths} />
-                            <CategoryFilter selectedCategories={selectedCategories} onSelectionChange={setSelectedCategories} />
-                            <CategoryChart data={reportData.expenseChartData} currency={displayCurrency} />
-                            <TrendChartComponent data={reportData.trendChartData} currency={displayCurrency} />
-                            <TransactionList transactions={paginatedTransactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} onNextPage={() => setCurrentPage(p => Math.min(p + 1, totalPages))} onPrevPage={() => setCurrentPage(p => Math.max(p - 1, 1))} currentPage={currentPage} totalPages={totalPages} sortConfig={sortConfig} setSortConfig={setSortConfig} />
+                            <CollapsibleCard title="Filters">
+                                <MonthFilter availableMonths={availableMonths} selectedMonths={selectedMonths} onSelectionChange={setSelectedMonths} />
+                                <CategoryFilter selectedCategories={selectedCategories} onSelectionChange={setSelectedCategories} />
+                            </CollapsibleCard>
+                             <CollapsibleCard title="Charts">
+                                <CategoryChart data={reportData.expenseChartData} currency={displayCurrency} />
+                                <TrendChartComponent data={reportData.trendChartData} currency={displayCurrency} />
+                            </CollapsibleCard>
+                            <TransactionList transactions={paginatedTransactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} onNextPage={() => setCurrentPage(p => Math.min(p + 1, totalPages))} onPrevPage={() => setCurrentPage(p => Math.max(p - 1, 1))} currentPage={currentPage} totalPages={totalPages} sortConfig={sortConfig} setSortConfig={setSortConfig} descriptionFilter={descriptionFilter} setDescriptionFilter={setDescriptionFilter} />
                         </div>
                     </div>
                 )}
                 {page === 'recurring' && (
-                    <RecurringPage expenses={recurringExpenses} onAdd={addRecurringItem} onDelete={(id) => requestDelete(id, 'recurring')} onPostRecurring={handlePostRecurring} allTransactions={allTransactions} />
+                    <RecurringPage expenses={recurringItems} onAdd={addRecurringItem} onDelete={(id) => requestDelete(id, 'recurring')} onPostRecurring={handlePostRecurring} allTransactions={allTransactions} />
                 )}
                 {page === 'import' && (
                     <ImportPage db={db} showToast={showToast} />
@@ -492,7 +521,7 @@ function MonthFilter({ availableMonths, selectedMonths, onSelectionChange }) {
     };
 
     return (
-        <div className="bg-white p-4 rounded-lg shadow-md">
+        <div>
             <h3 className="text-lg font-bold mb-2">Filter by Month</h3>
             <p className="text-sm text-gray-500 mb-3">Hold Ctrl (or Cmd on Mac) to select multiple months.</p>
             <select
@@ -527,7 +556,7 @@ function CategoryFilter({ selectedCategories, onSelectionChange }) {
     };
 
     return (
-        <div className="bg-white p-4 rounded-lg shadow-md">
+        <div className="mt-4">
             <div className="flex justify-between items-center mb-3">
                  <h3 className="text-lg font-bold">Filter by Category</h3>
                  <button
@@ -1006,7 +1035,7 @@ function EditModal({ transaction, onSave, onCancel }) {
 function SummaryReport({ summary, currency, onCurrencyChange }) {
     const formatCurrency = (value) => `${CURRENCY_SYMBOLS[currency] || ''}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     return (
-        <div className="bg-white p-6 rounded-lg shadow-md">
+        <div className="p-4">
             <div className="flex justify-between items-center mb-4">
                 <h2 className="text-2xl font-bold">Summary</h2>
                  <select value={currency} onChange={e => onCurrencyChange(e.target.value)} className="px-3 py-1 border-gray-300 rounded-md shadow-sm">
@@ -1025,7 +1054,7 @@ function SummaryReport({ summary, currency, onCurrencyChange }) {
 
 function CategoryChart({ data, currency }) {
     return (
-        <div className="bg-white p-6 rounded-lg shadow-md">
+        <div>
             <h2 className="text-2xl font-bold mb-4">Expense Breakdown</h2>
             <div style={{ width: '100%', height: 300 }}>
                 {data.length > 0 ? (
@@ -1050,7 +1079,7 @@ function TrendChartComponent({ data, currency }) {
     };
 
     return (
-        <div className="bg-white p-6 rounded-lg shadow-md">
+        <div className="mt-8">
             <h2 className="text-2xl font-bold mb-4">Trends Over Time</h2>
             <div style={{ width: '100%', height: 300 }}>
                 {data.length > 0 ? (
@@ -1072,7 +1101,7 @@ function TrendChartComponent({ data, currency }) {
 }
 
 
-function TransactionList({ transactions, onDelete, onEdit, displayCurrency, latestRates, onNextPage, onPrevPage, currentPage, totalPages, sortConfig, setSortConfig }) {
+function TransactionList({ transactions, onDelete, onEdit, displayCurrency, latestRates, onNextPage, onPrevPage, currentPage, totalPages, sortConfig, setSortConfig, descriptionFilter, setDescriptionFilter }) {
     const conversionRate = latestRates ? latestRates[displayCurrency] || 1 : 1;
     const formatCurrency = (value) => `${CURRENCY_SYMBOLS[displayCurrency] || ''}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     
@@ -1086,7 +1115,16 @@ function TransactionList({ transactions, onDelete, onEdit, displayCurrency, late
 
     return (
         <div className="bg-white p-6 rounded-lg shadow-md">
-            <h2 className="text-2xl font-bold mb-4">Transaction History</h2>
+            <div className="flex justify-between items-center mb-4">
+                <h2 className="text-2xl font-bold">Transaction History</h2>
+                <input 
+                    type="text" 
+                    placeholder="Search descriptions..."
+                    value={descriptionFilter}
+                    onChange={(e) => setDescriptionFilter(e.target.value)}
+                    className="p-2 border border-gray-300 rounded-md"
+                />
+            </div>
             <div className="overflow-x-auto">
                 <table className="w-full text-sm text-left text-gray-500">
                     <thead className="text-xs text-gray-700 uppercase bg-gray-50">
