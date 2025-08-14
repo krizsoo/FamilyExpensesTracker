@@ -1138,9 +1138,9 @@ function TransactionList({ transactions, onDelete, onEdit, displayCurrency, late
                     <thead className="text-xs text-gray-700 uppercase bg-gray-50">
                         <tr>
                             <th scope="col" className="px-4 py-3 cursor-pointer" onClick={() => requestSort('transactionDate')}>Date<SortIcon direction={sortConfig.key === 'transactionDate' ? sortConfig.direction : null} /></th>
-                            <th scope="col" className="px-4 py-3">Description</th>
-                            <th scope="col" className="px-4 py-3 cursor-pointer" onClick={() => requestSort('category')}>Category<SortIcon direction={sortConfig.key === 'category' ? sortConfig.direction : null} /></th>
                             <th scope="col" className="px-4 py-3 text-right cursor-pointer" onClick={() => requestSort('amountInBaseCurrency')}>Amount ({displayCurrency})<SortIcon direction={sortConfig.key === 'amountInBaseCurrency' ? sortConfig.direction : null} /></th>
+                            <th scope="col" className="px-4 py-3 cursor-pointer" onClick={() => requestSort('category')}>Category<SortIcon direction={sortConfig.key === 'category' ? sortConfig.direction : null} /></th>
+                            <th scope="col" className="px-4 py-3">Description</th>
                             <th scope="col" className="px-4 py-3"></th>
                         </tr>
                     </thead>
@@ -1157,11 +1157,11 @@ function TransactionList({ transactions, onDelete, onEdit, displayCurrency, late
                             return (
                                 <tr key={t.id} className="bg-white border-b hover:bg-gray-50">
                                     <td className="px-4 py-3">{t.transactionDate.toLocaleDateString()}</td>
-                                    <td className="px-4 py-3 font-medium text-gray-900">{t.description || '-'}</td>
-                                    <td className="px-4 py-3">{t.category}</td>
                                     <td className={`px-4 py-3 text-right font-semibold font-mono ${isExpense ? 'text-red-500' : 'text-green-500'}`}>
                                         {isExpense ? '-' : '+'}{formatCurrency(displayAmount)}
                                     </td>
+                                    <td className="px-4 py-3">{t.category}</td>
+                                    <td className="px-4 py-3 font-medium text-gray-900">{t.description || '-'}</td>
                                     <td className="px-4 py-3 text-right">
                                         <div className="flex justify-end space-x-3">
                                             <button onClick={() => onEdit(t)} className="text-gray-400 hover:text-blue-600"><PencilIcon/></button>
