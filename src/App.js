@@ -190,7 +190,7 @@ function FinanceTracker({ user, onSignOut }) {
             setIsLoading(true);
             const summaryQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/transactions`), orderBy("transactionDate", "desc"));
             const unsubscribeSummary = onSnapshot(summaryQuery, (snapshot) => {
-                const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), transactionDate: doc.data().transactionDate.toDate() }));
+                const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 setAllTransactions(data);
                 setIsLoading(false);
             });
@@ -235,12 +235,8 @@ function FinanceTracker({ user, onSignOut }) {
     }, []);
 
     // Always get year and month in Hungary timezone
-    const getYearMonthLocal = (date) => {
-        const budapestDate = new Date(date.toLocaleString('en-US', { timeZone: 'Europe/Budapest' }));
-        const year = budapestDate.getFullYear();
-        const month = ('0' + (budapestDate.getMonth() + 1)).slice(-2);
-        return `${year}-${month}`;
-    };
+    // For date string YYYY-MM-DD, just return YYYY-MM
+    const getYearMonthLocal = (dateStr) => dateStr.slice(0, 7);
 
     const availableMonths = useMemo(() => {
         const months = new Set(allTransactions.map(t => getYearMonthLocal(t.transactionDate)));
@@ -314,7 +310,8 @@ function FinanceTracker({ user, onSignOut }) {
             const rate = latestRates[originalCurrency] || 1;
             const amountInBase = originalAmount / rate;
             const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
-            await addDoc(collection(db, collectionPath), { ...data, originalAmount: parseFloat(originalAmount), transactionDate: Timestamp.fromDate(new Date(data.transactionDate)), baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase), createdAt: Timestamp.now() });
+            // Store transactionDate as string YYYY-MM-DD
+            await addDoc(collection(db, collectionPath), { ...data, originalAmount: parseFloat(originalAmount), transactionDate: data.transactionDate, baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase), createdAt: Date.now() });
             showToast(`${data.type} added successfully!`);
         } catch (e) { showToast(`Failed to add transaction: ${e.message}`, 'error'); } finally { setIsLoading(false); }
     }, [db, latestRates]);
@@ -327,7 +324,8 @@ function FinanceTracker({ user, onSignOut }) {
             const { originalAmount, originalCurrency } = updatedData;
             const rate = latestRates[originalCurrency] || 1;
             const amountInBase = originalAmount / rate;
-            const payload = { ...updatedData, originalAmount: parseFloat(originalAmount), transactionDate: Timestamp.fromDate(new Date(updatedData.transactionDate)), baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase) };
+            // Store transactionDate as string YYYY-MM-DD
+            const payload = { ...updatedData, originalAmount: parseFloat(originalAmount), transactionDate: updatedData.transactionDate, baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase) };
             await updateDoc(docRef, payload);
             showToast("Transaction updated!");
             setEditingTransaction(null);
@@ -1158,7 +1156,7 @@ function TransactionList({ transactions, onDelete, onEdit, displayCurrency, late
                             
                             return (
                                 <tr key={t.id} className="bg-white border-b hover:bg-gray-50">
-                                    <td className="px-4 py-3">{t.transactionDate.toLocaleDateString('en-GB', { timeZone: 'Europe/Budapest' })}</td>
+                                    <td className="px-4 py-3">{t.transactionDate}</td>
                                     <td className={`px-4 py-3 text-right font-semibold font-mono ${isExpense ? 'text-red-500' : 'text-green-500'}`}>
                                         {isExpense ? '-' : '+'}{formatCurrency(displayAmount)}
                                     </td>
