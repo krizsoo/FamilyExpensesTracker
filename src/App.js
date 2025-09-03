@@ -968,7 +968,11 @@ function TransactionForm({ onSubmit, allTransactions }) {
 function EditModal({ transaction, onSave, onCancel }) {
     const [formData, setFormData] = useState({
         ...transaction,
-        transactionDate: transaction.transactionDate.toISOString().split('T')[0]
+        transactionDate: typeof transaction.transactionDate === 'string'
+            ? transaction.transactionDate
+            : (transaction.transactionDate && transaction.transactionDate.toISOString)
+                ? transaction.transactionDate.toISOString().split('T')[0]
+                : ''
     });
 
     useEffect(() => {
