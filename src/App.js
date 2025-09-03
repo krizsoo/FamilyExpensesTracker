@@ -234,9 +234,11 @@ function FinanceTracker({ user, onSignOut }) {
         manageRateCache();
     }, []);
 
+    // Always get year and month in Hungary timezone
     const getYearMonthLocal = (date) => {
-        const year = date.getFullYear();
-        const month = ('0' + (date.getMonth() + 1)).slice(-2);
+        const budapestDate = new Date(date.toLocaleString('en-US', { timeZone: 'Europe/Budapest' }));
+        const year = budapestDate.getFullYear();
+        const month = ('0' + (budapestDate.getMonth() + 1)).slice(-2);
         return `${year}-${month}`;
     };
 
@@ -1156,7 +1158,7 @@ function TransactionList({ transactions, onDelete, onEdit, displayCurrency, late
                             
                             return (
                                 <tr key={t.id} className="bg-white border-b hover:bg-gray-50">
-                                    <td className="px-4 py-3">{t.transactionDate.toLocaleDateString()}</td>
+                                    <td className="px-4 py-3">{t.transactionDate.toLocaleDateString('en-GB', { timeZone: 'Europe/Budapest' })}</td>
                                     <td className={`px-4 py-3 text-right font-semibold font-mono ${isExpense ? 'text-red-500' : 'text-green-500'}`}>
                                         {isExpense ? '-' : '+'}{formatCurrency(displayAmount)}
                                     </td>
