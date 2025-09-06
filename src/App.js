@@ -96,6 +96,10 @@ function AuthScreen({ auth }) {
 }
 
 function Dashboard({ user, onSignOut }) {
+  // Recurring items state
+  const [recurring, setRecurring] = useState([]);
+  const [recForm, setRecForm] = useState({ amount: '', category: '', description: '' });
+  const [recLoading, setRecLoading] = useState(false);
   const [transactions, setTransactions] = useState([]);
   const [form, setForm] = useState({ amount: '', category: '', date: '', description: '' });
   const [loading, setLoading] = useState(false);
@@ -108,6 +112,10 @@ function Dashboard({ user, onSignOut }) {
   const db = getFirestore();
   const transactionsRef = collection(db, 'users', user.uid, 'transactions');
 
+  // Recurring items collection
+  const recurringRef = collection(db, 'users', user.uid, 'recurring');
+
+
   // Listen for transactions
   useEffect(() => {
     const q = query(transactionsRef, orderBy('date', 'desc'));
@@ -117,6 +125,73 @@ function Dashboard({ user, onSignOut }) {
     return () => unsub();
     // eslint-disable-next-line
   }, []);
+
+  // Listen for recurring items
+  useEffect(() => {
+    const unsub = onSnapshot(recurringRef, (snapshot) => {
+      setRecurring(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsub();
+    // eslint-disable-next-line
+  }, []);
+  // Recurring item handlers
+  const handleRecChange = (e) => {
+    setRecForm(f => ({ ...f, [e.target.name]: e.target.value }));
+  };
+  const handleRecAdd = async (e) => {
+    e.preventDefault();
+    setRecLoading(true);
+    try {
+      if (!recForm.amount || !recForm.category) {
+        setToast('Amount and category required for recurring.');
+        setRecLoading(false);
+        return;
+      }
+      await addDoc(recurringRef, {
+        amount: parseFloat(recForm.amount),
+        category: recForm.category,
+        description: recForm.description,
+        createdAt: Timestamp.now(),
+      });
+      setRecForm({ amount: '', category: '', description: '' });
+      setToast('Recurring item added!');
+    } catch {
+      setToast('Failed to add recurring item.');
+    }
+    setRecLoading(false);
+  };
+  const handleRecDelete = async (id) => {
+    if (!window.confirm('Delete this recurring item?')) return;
+    try {
+      await deleteDoc(doc(recurringRef, id));
+      setToast('Recurring item deleted!');
+    } catch {
+      setToast('Failed to delete recurring item.');
+    }
+  };
+  // Post all recurring items for this month
+  const handlePostRecurring = async () => {
+    if (recurring.length === 0) return;
+    setRecLoading(true);
+    const today = new Date();
+    const monthStr = today.toISOString().slice(0, 7);
+    // Only add if not already present for this month (by description)
+    const already = new Set(transactions.filter(t => t.date && t.date.startsWith(monthStr)).map(t => t.description));
+    let added = 0;
+    for (const item of recurring) {
+      if (already.has(item.description)) continue;
+      await addDoc(transactionsRef, {
+        amount: item.amount,
+        category: item.category,
+        date: monthStr + '-01',
+        description: item.description,
+        createdAt: Timestamp.now(),
+      });
+      added++;
+    }
+    setToast(added ? `Posted ${added} recurring item(s) for this month!` : 'No new recurring items to post.');
+    setRecLoading(false);
+  };
 
   const handleChange = (e) => {
     setForm(f => ({ ...f, [e.target.name]: e.target.value }));
@@ -190,6 +265,30 @@ function Dashboard({ user, onSignOut }) {
       </header>
       <main className="p-8 max-w-2xl mx-auto">
         {toast && <div className="mb-4 p-2 bg-green-100 text-green-700 rounded">{toast}</div>}
+
+        {/* Recurring Items Section */}
+        <div className="bg-white rounded-lg shadow-md p-8 mb-8">
+          <h2 className="text-xl font-bold mb-4 flex items-center justify-between">Recurring Items
+            <button onClick={handlePostRecurring} disabled={recLoading} className="ml-2 bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded text-sm">Post for this month</button>
+          </h2>
+          <form onSubmit={handleRecAdd} className="flex gap-2 mb-4">
+            <input name="amount" type="number" step="0.01" placeholder="Amount" value={recForm.amount} onChange={handleRecChange} className="border rounded px-2 py-1 w-24" required />
+            <input name="category" type="text" placeholder="Category" value={recForm.category} onChange={handleRecChange} className="border rounded px-2 py-1 w-32" required />
+            <input name="description" type="text" placeholder="Description" value={recForm.description} onChange={handleRecChange} className="border rounded px-2 py-1 w-40" />
+            <button type="submit" disabled={recLoading} className="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded">Add</button>
+          </form>
+          <ul>
+            {recurring.length === 0 && <li className="text-gray-500">No recurring items.</li>}
+            {recurring.map(item => (
+              <li key={item.id} className="flex items-center justify-between border-b py-2">
+                <span>{item.category} - {item.amount} {item.description && `- ${item.description}`}</span>
+                <button onClick={() => handleRecDelete(item.id)} className="bg-red-500 text-white px-2 py-1 rounded text-xs">Delete</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        {/* Transaction Section */}
         <div className="bg-white rounded-lg shadow-md p-8 mb-8">
           <h2 className="text-xl font-bold mb-4">Add Transaction</h2>
           <form onSubmit={handleAdd} className="space-y-4">
