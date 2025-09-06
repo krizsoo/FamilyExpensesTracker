@@ -198,30 +198,45 @@ function FinanceTracker({ user, onSignOut }) {
     const fetchTransactionsByMonth = useCallback(async (month, lastDoc = null) => {
         if (!db || !month) return;
         setIsLoading(true);
-        const startOfMonth = `${month}-01`;
-        const endOfMonth = `${month}-31`;
-        let q = query(
-            collection(db, `artifacts/${appId}/families/${familyId}/transactions`),
-            where("transactionDate", ">=", startOfMonth),
-            where("transactionDate", "<=", endOfMonth),
-            orderBy("transactionDate", "desc"),
-            limit(25)
-        );
-        if (lastDoc) {
-            q = query(
-                collection(db, `artifacts/${appId}/families/${familyId}/transactions`),
-                where("transactionDate", ">=", startOfMonth),
-                where("transactionDate", "<=", endOfMonth),
-                orderBy("transactionDate", "desc"),
-                startAfter(lastDoc),
-                limit(25)
-            );
-        }
-        const snapshot = await getDocs(q);
-        const newTransactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setLastVisible(snapshot.docs[snapshot.docs.length - 1]);
-        setAllTransactions(prev => lastDoc ? [...prev, ...newTransactions] : newTransactions);
-        setIsLoading(false);
+        setError(null);
+        let timeoutId;
+        try {
+            // Timeout after 20 seconds
+            await new Promise((resolve, reject) => {
+                timeoutId = setTimeout(() => reject(new Error('Loading timed out. Please try again.')), 20000);
+                (async () => {
+                    const startOfMonth = `${month}-01`;
+                    const endOfMonth = `${month}-31`;
+                    let q = query(
+                        collection(db, `artifacts/${appId}/families/${familyId}/transactions`),
+                        where("transactionDate", ">=", startOfMonth),
+                        where("transactionDate", "<=", endOfMonth),
+                        orderBy("transactionDate", "desc"),
+                        limit(25)
+                    );
+                    if (lastDoc) {
+                        q = query(
+                            collection(db, `artifacts/${appId}/families/${familyId}/transactions`),
+                            where("transactionDate", ">=", startOfMonth),
+                            where("transactionDate", "<=", endOfMonth),
+                            orderBy("transactionDate", "desc"),
+                            startAfter(lastDoc),
+                            limit(25)
+                        );
+                    }
+                    const snapshot = await getDocs(q);
+                    const newTransactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    setLastVisible(snapshot.docs[snapshot.docs.length - 1]);
+                    setAllTransactions(prev => lastDoc ? [...prev, ...newTransactions] : newTransactions);
+                    resolve();
+                })().catch(reject);
+            });
+        } catch (e) {
+            setError(e.message || 'Failed to load transactions.');
+        } finally {
+            clearTimeout(timeoutId);
+            setIsLoading(false);
+    }
     }, [db]);
 
     // Fetch transactions when selected month changes
@@ -292,93 +307,7 @@ function FinanceTracker({ user, onSignOut }) {
         
         if (descriptionFilter) {
             transactions = transactions.filter(t => t.description.toLowerCase().includes(descriptionFilter.toLowerCase()));
-        }
-        
-        // Sorting logic
-        transactions.sort((a, b) => {
-            let aValue = a[sortConfig.key];
-            let bValue = b[sortConfig.key];
-
-            if(sortConfig.key === 'amountInBaseCurrency') {
-                 if (a.originalCurrency === displayCurrency) aValue = a.originalAmount;
-                 else aValue = a.amountInBaseCurrency * (latestRates ? latestRates[displayCurrency] || 1 : 1);
-                 
-                 if (b.originalCurrency === displayCurrency) bValue = b.originalAmount;
-                 else bValue = b.amountInBaseCurrency * (latestRates ? latestRates[displayCurrency] || 1 : 1);
-            }
-
-            if (aValue < bValue) {
-                return sortConfig.direction === 'asc' ? -1 : 1;
-            }
-            if (aValue > bValue) {
-                return sortConfig.direction === 'asc' ? 1 : -1;
-            }
-            return 0;
-        });
-
-        return transactions;
-    }, [allTransactions, selectedMonths, selectedCategories, descriptionFilter, sortConfig, displayCurrency, latestRates]);
-    
-    const paginatedTransactions = useMemo(() => {
-        const startIndex = (currentPage - 1) * TRANSACTIONS_PER_PAGE;
-        const endIndex = startIndex + TRANSACTIONS_PER_PAGE;
-        return filteredTransactions.slice(startIndex, endIndex);
-    }, [filteredTransactions, currentPage]);
-
-    useEffect(() => {
-        setCurrentPage(1);
-    }, [selectedMonths, selectedCategories, descriptionFilter]);
-
-    const totalPages = Math.ceil(filteredTransactions.length / TRANSACTIONS_PER_PAGE);
-
-    const addTransaction = useCallback(async (data) => {
-        if (!db || !latestRates) { showToast("Data not ready, please try again.", "error"); return; }
-        setIsLoading(true);
-        try {
-            const { originalAmount, originalCurrency } = data;
-            const rate = latestRates[originalCurrency] || 1;
-            const amountInBase = originalAmount / rate;
-            const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
-            // Store transactionDate as string YYYY-MM-DD
-            await addDoc(collection(db, collectionPath), { ...data, originalAmount: parseFloat(originalAmount), transactionDate: data.transactionDate, baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase), createdAt: Date.now() });
-            showToast(`${data.type} added successfully!`);
-        } catch (e) { showToast(`Failed to add transaction: ${e.message}`, 'error'); } finally { setIsLoading(false); }
-    }, [db, latestRates]);
-
-    const updateTransaction = useCallback(async (updatedData) => {
-        if (!db || !editingTransaction || !latestRates) { showToast("Data not ready, please try again.", "error"); return; }
-        setIsLoading(true);
-        try {
-            const docRef = doc(db, `artifacts/${appId}/families/${familyId}/transactions`, editingTransaction.id);
-            const { originalAmount, originalCurrency } = updatedData;
-            const rate = latestRates[originalCurrency] || 1;
-            const amountInBase = originalAmount / rate;
-            // Store transactionDate as string YYYY-MM-DD
-            const payload = { ...updatedData, originalAmount: parseFloat(originalAmount), transactionDate: updatedData.transactionDate, baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase) };
-            await updateDoc(docRef, payload);
-            showToast("Transaction updated!");
-            setEditingTransaction(null);
-        } catch (e) { showToast(`Update failed: ${e.message}`, 'error'); } finally { setIsLoading(false); }
-    }, [db, editingTransaction, latestRates]);
-
-    const requestDelete = (id, type) => setShowConfirmModal({ show: true, id, type });
-    
-    const handleConfirmDelete = async () => {
-        const { id: idToDelete, type } = showConfirmModal;
-        if (!db || !idToDelete) return;
-        
-        const collectionName = type === 'transaction' ? 'transactions' : 'recurring';
-        
-        setIsLoading(true);
-        try {
-            await deleteDoc(doc(db, `artifacts/${appId}/families/${familyId}/${collectionName}`, idToDelete));
-            showToast(`${type.charAt(0).toUpperCase() + type.slice(1)} deleted.`);
-        } catch (e) { showToast(`Failed to delete: ${e.message}`, 'error'); } 
-        finally { 
-            setIsLoading(false); 
-            setShowConfirmModal({ show: false, id: null, type: '' });
-        }
-    };
+    }
 
     const addRecurringItem = useCallback(async (data) => {
         if (!db) { showToast("Database not ready", "error"); return; }
@@ -485,10 +414,15 @@ function FinanceTracker({ user, onSignOut }) {
     return (
         <div className="bg-gray-100 min-h-screen font-sans text-gray-800">
             {isLoading && <div className="fixed inset-0 bg-white bg-opacity-70 z-40"><LoadingSpinner /></div>}
+            {error && <div className="fixed inset-0 bg-white bg-opacity-90 z-50 flex flex-col items-center justify-center">
+                <div className="bg-red-100 border border-red-400 text-red-700 px-6 py-4 rounded relative max-w-md text-center">
+                    <strong className="font-bold">Error:</strong> <span className="block sm:inline">{error}</span>
+                    <button onClick={() => fetchTransactionsByMonth(selectedMonths[0])} className="block mt-4 mx-auto bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded">Retry</button>
+                </div>
+            </div>}
             {toast.show && <Toast message={toast.message} type={toast.type} onClose={() => setToast(t => ({ ...t, show: false }))} />}
             {showConfirmModal.show && <ConfirmationModal message={`Are you sure you want to permanently delete this ${showConfirmModal.type}?`} onConfirm={handleConfirmDelete} onCancel={() => setShowConfirmModal({ show: false, id: null, type: '' })} />}
             {editingTransaction && <EditModal transaction={editingTransaction} onSave={updateTransaction} onCancel={() => setEditingTransaction(null)} />}
-            
             <header className="bg-white shadow-md">
                 <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
                     <div className="flex items-center space-x-4">
@@ -551,6 +485,7 @@ function FinanceTracker({ user, onSignOut }) {
             </main>
         </div>
     );
+}
 }
 
 // --- Child Components ---
