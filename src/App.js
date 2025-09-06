@@ -483,7 +483,6 @@ function FinanceTracker({ user, onSignOut }) {
         </div>
     );
 }
-}
 
 // --- Child Components ---
 
