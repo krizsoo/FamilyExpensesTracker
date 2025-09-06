@@ -180,10 +180,7 @@ function FinanceTracker({ user, onSignOut }) {
     const showToast = (message, type = 'success') => {
         setToast({ show: true, message, type });
         setTimeout(() => setToast({ show: false, message: '', type }), 4000);
-    };
-
-    // Listeners for all transactions and recurring expenses
-    // Listen to recurring items only
+    );
     useEffect(() => {
         if (!db) return;
         const recurringQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/recurring`), orderBy("createdAt", "desc"));
