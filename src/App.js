@@ -11,7 +11,7 @@ try {
 } catch (e) {
     console.error("Firebase config is missing or invalid. Please set REACT_APP_FIREBASE_CONFIG environment variable.");
     firebaseConfig = { apiKey: "YOUR_API_KEY", authDomain: "YOUR_AUTH_DOMAIN", projectId: "YOUR_PROJECT_ID" };
-}
+// ...existing code...
 
 // --- App & Family ID ---
 const appId = 'family-finance-tracker-v1';
@@ -335,13 +335,6 @@ function FinanceTracker({ user, onSignOut }) {
         setIsLoading(true);
         try {
             const batch = writeBatch(db);
-                                        {lastVisible && (
-                                            <div className="flex justify-center mt-4">
-                                                <button onClick={handleLoadMore} disabled={loadingMore} className="px-6 py-2 bg-blue-500 text-white rounded-md font-bold disabled:opacity-50 disabled:cursor-not-allowed">
-                                                    {loadingMore ? "Loading..." : "Load More"}
-                                                </button>
-                                            </div>
-                                        )}
             const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
             
             toAdd.forEach(item => {
