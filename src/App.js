@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, Timestamp } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, Timestamp, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 
 // --- Firebase Config ---
 let firebaseConfig;
@@ -100,6 +100,9 @@ function Dashboard({ user, onSignOut }) {
   const [form, setForm] = useState({ amount: '', category: '', date: '', description: '' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [editId, setEditId] = useState(null);
+  const [editForm, setEditForm] = useState({ amount: '', category: '', date: '', description: '' });
+  const [toast, setToast] = useState('');
 
   // Firestore setup
   const db = getFirestore();
@@ -117,6 +120,9 @@ function Dashboard({ user, onSignOut }) {
 
   const handleChange = (e) => {
     setForm(f => ({ ...f, [e.target.name]: e.target.value }));
+  };
+  const handleEditChange = (e) => {
+    setEditForm(f => ({ ...f, [e.target.name]: e.target.value }));
   };
 
   const handleAdd = async (e) => {
@@ -137,10 +143,43 @@ function Dashboard({ user, onSignOut }) {
         createdAt: Timestamp.now(),
       });
       setForm({ amount: '', category: '', date: '', description: '' });
+      setToast('Transaction added!');
     } catch (err) {
       setError('Failed to add transaction.');
     }
     setLoading(false);
+  };
+
+  const handleEdit = (tx) => {
+    setEditId(tx.id);
+    setEditForm({ amount: tx.amount, category: tx.category, date: tx.date, description: tx.description || '' });
+  };
+
+  const handleEditSave = async (e) => {
+    e.preventDefault();
+    if (!editId) return;
+    try {
+      await updateDoc(doc(transactionsRef, editId), {
+        amount: parseFloat(editForm.amount),
+        category: editForm.category,
+        date: editForm.date,
+        description: editForm.description,
+      });
+      setEditId(null);
+      setToast('Transaction updated!');
+    } catch {
+      setToast('Failed to update transaction.');
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('Delete this transaction?')) return;
+    try {
+      await deleteDoc(doc(transactionsRef, id));
+      setToast('Transaction deleted!');
+    } catch {
+      setToast('Failed to delete transaction.');
+    }
   };
 
   return (
@@ -150,6 +189,7 @@ function Dashboard({ user, onSignOut }) {
         <button onClick={onSignOut} className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-md transition">Sign Out</button>
       </header>
       <main className="p-8 max-w-2xl mx-auto">
+        {toast && <div className="mb-4 p-2 bg-green-100 text-green-700 rounded">{toast}</div>}
         <div className="bg-white rounded-lg shadow-md p-8 mb-8">
           <h2 className="text-xl font-bold mb-4">Add Transaction</h2>
           <form onSubmit={handleAdd} className="space-y-4">
@@ -177,15 +217,35 @@ function Dashboard({ user, onSignOut }) {
                   <th className="py-2">Amount</th>
                   <th className="py-2">Category</th>
                   <th className="py-2">Description</th>
+                  <th className="py-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {transactions.map(tx => (
                   <tr key={tx.id} className="border-t">
-                    <td className="py-2">{tx.date}</td>
-                    <td className="py-2">{tx.amount}</td>
-                    <td className="py-2">{tx.category}</td>
-                    <td className="py-2">{tx.description}</td>
+                    {editId === tx.id ? (
+                      <>
+                        <td className="py-2"><input name="date" type="date" value={editForm.date} onChange={handleEditChange} className="border rounded px-2 py-1 w-28" /></td>
+                        <td className="py-2"><input name="amount" type="number" value={editForm.amount} onChange={handleEditChange} className="border rounded px-2 py-1 w-20" /></td>
+                        <td className="py-2"><input name="category" type="text" value={editForm.category} onChange={handleEditChange} className="border rounded px-2 py-1 w-24" /></td>
+                        <td className="py-2"><input name="description" type="text" value={editForm.description} onChange={handleEditChange} className="border rounded px-2 py-1 w-32" /></td>
+                        <td className="py-2 flex gap-2">
+                          <button onClick={handleEditSave} className="bg-green-500 text-white px-2 py-1 rounded">Save</button>
+                          <button onClick={() => setEditId(null)} className="bg-gray-300 px-2 py-1 rounded">Cancel</button>
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="py-2">{tx.date}</td>
+                        <td className="py-2">{tx.amount}</td>
+                        <td className="py-2">{tx.category}</td>
+                        <td className="py-2">{tx.description}</td>
+                        <td className="py-2 flex gap-2">
+                          <button onClick={() => handleEdit(tx)} className="bg-blue-500 text-white px-2 py-1 rounded">Edit</button>
+                          <button onClick={() => handleDelete(tx.id)} className="bg-red-500 text-white px-2 py-1 rounded">Delete</button>
+                        </td>
+                      </>
+                    )}
                   </tr>
                 ))}
               </tbody>
