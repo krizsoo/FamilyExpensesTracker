@@ -93,11 +93,7 @@ export default function App() {
 
     return (
         <>
-            {user ? (
-                <FinanceTracker user={user} onSignOut={handleSignOut} />
-            ) : (
-                <AuthScreen auth={auth} />
-            )}
+                {user ? <FinanceTracker user={user} onSignOut={handleSignOut} /> : <AuthScreen auth={auth} />}
         </>
     );
 }
@@ -156,6 +152,8 @@ function FinanceTracker({ user, onSignOut }) {
     const [db, setDb] = useState(null);
     const [page, setPage] = useState('dashboard');
     const [allTransactions, setAllTransactions] = useState([]);
+    const [lastVisible, setLastVisible] = useState(null);
+    const [loadingMore, setLoadingMore] = useState(false);
     const [recurringItems, setRecurringItems] = useState([]);
     const [displayCurrency, setDisplayCurrency] = useState(localStorage.getItem('lastReportCurrency') || 'USD');
     const [selectedMonths, setSelectedMonths] = useState([]);
@@ -185,28 +183,59 @@ function FinanceTracker({ user, onSignOut }) {
     };
 
     // Listeners for all transactions and recurring expenses
+    // Listen to recurring items only
     useEffect(() => {
-        if (db) {
-            setIsLoading(true);
-            const summaryQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/transactions`), orderBy("transactionDate", "desc"));
-            const unsubscribeSummary = onSnapshot(summaryQuery, (snapshot) => {
-                const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                setAllTransactions(data);
-                setIsLoading(false);
-            });
-
-            const recurringQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/recurring`), orderBy("createdAt", "desc"));
-            const unsubscribeRecurring = onSnapshot(recurringQuery, (snapshot) => {
-                const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                setRecurringItems(data);
-            });
-
-            return () => {
-                unsubscribeSummary();
-                unsubscribeRecurring();
-            };
-        }
+        if (!db) return;
+        const recurringQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/recurring`), orderBy("createdAt", "desc"));
+        const unsubscribeRecurring = onSnapshot(recurringQuery, (snapshot) => {
+            const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setRecurringItems(data);
+        });
+        return () => unsubscribeRecurring();
     }, [db]);
+
+    // Fetch paginated transactions for selected month
+    const fetchTransactionsByMonth = useCallback(async (month, lastDoc = null) => {
+        if (!db || !month) return;
+        setIsLoading(true);
+        const startOfMonth = `${month}-01`;
+        const endOfMonth = `${month}-31`;
+        let q = query(
+            collection(db, `artifacts/${appId}/families/${familyId}/transactions`),
+            where("transactionDate", ">=", startOfMonth),
+            where("transactionDate", "<=", endOfMonth),
+            orderBy("transactionDate", "desc"),
+            limit(25)
+        );
+        if (lastDoc) {
+            q = query(
+                collection(db, `artifacts/${appId}/families/${familyId}/transactions`),
+                where("transactionDate", ">=", startOfMonth),
+                where("transactionDate", "<=", endOfMonth),
+                orderBy("transactionDate", "desc"),
+                startAfter(lastDoc),
+                limit(25)
+            );
+        }
+        const snapshot = await getDocs(q);
+        const newTransactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setLastVisible(snapshot.docs[snapshot.docs.length - 1]);
+        setAllTransactions(prev => lastDoc ? [...prev, ...newTransactions] : newTransactions);
+        setIsLoading(false);
+    }, [db]);
+
+    // Fetch transactions when selected month changes
+    useEffect(() => {
+        if (!db || !selectedMonths[0]) return;
+        fetchTransactionsByMonth(selectedMonths[0]);
+    }, [db, selectedMonths, fetchTransactionsByMonth]);
+    // Load more transactions for pagination
+    const handleLoadMore = () => {
+        if (lastVisible && selectedMonths[0]) {
+            setLoadingMore(true);
+            fetchTransactionsByMonth(selectedMonths[0], lastVisible).then(() => setLoadingMore(false));
+        }
+    };
 
     useEffect(() => {
         const manageRateCache = async () => {
@@ -380,20 +409,28 @@ function FinanceTracker({ user, onSignOut }) {
         setIsLoading(true);
         try {
             const batch = writeBatch(db);
+                                        {lastVisible && (
+                                            <div className="flex justify-center mt-4">
+                                                <button onClick={handleLoadMore} disabled={loadingMore} className="px-6 py-2 bg-blue-500 text-white rounded-md font-bold disabled:opacity-50 disabled:cursor-not-allowed">
+                                                    {loadingMore ? "Loading..." : "Load More"}
+                                                </button>
+                                            </div>
+                                        )}
             const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
             
             toAdd.forEach(item => {
                 const { originalAmount, originalCurrency } = item;
                 const rate = latestRates[originalCurrency] || 1;
                 const amountInBase = originalAmount / rate;
+                const todayStr = new Date().toISOString().split('T')[0];
                 const newTransaction = {
                     ...item,
                     originalAmount: parseFloat(originalAmount),
-                    transactionDate: Timestamp.now(),
+                    transactionDate: todayStr,
                     baseCurrency: 'USD',
                     exchangeRateToBase: rate,
                     amountInBaseCurrency: parseFloat(amountInBase),
-                    createdAt: Timestamp.now(),
+                    createdAt: Date.now(),
                 };
                 const docRef = doc(collection(db, collectionPath));
                 batch.set(docRef, newTransaction);
