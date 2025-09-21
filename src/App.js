@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { initializeApp } from 'firebase/app';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { initializeApp, getApps } from 'firebase/app';
 import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, updateDoc, Timestamp, orderBy, limit, startAfter, getDocs, endBefore, limitToLast, writeBatch, where } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, updateDoc, Timestamp, orderBy, limit, getDocs, writeBatch, startAfter } from 'firebase/firestore';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 
 // --- Firebase Configuration ---
@@ -28,7 +28,6 @@ const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#da70d6'
 const CURRENCY_SYMBOLS = { USD: '$', EUR: '€', GBP: '£', HUF: 'Ft' };
 
 // --- Helper Components & Icons ---
-const LoadingSpinner = () => (<div className="flex justify-center items-center h-full"><div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-blue-500"></div></div>);
 const Toast = ({ message, type, onClose }) => (<div className={`fixed top-5 right-5 p-4 rounded-lg shadow-lg text-white z-50 ${type === 'success' ? 'bg-green-500' : 'bg-red-500'}`}><span>{message}</span><button onClick={onClose} className="ml-4 font-bold">X</button></div>);
 const ConfirmationModal = ({ message, onConfirm, onCancel }) => (<div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50"><div className="bg-white rounded-lg p-8 shadow-2xl w-11/12 md:w-1/3"><h3 className="text-lg font-bold mb-4">Confirm Action</h3><p className="mb-6">{message}</p><div className="flex justify-end space-x-4"><button onClick={onCancel} className="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded transition">Cancel</button><button onClick={onConfirm} className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded transition">Delete</button></div></div></div>);
 const TrashIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>);
@@ -53,11 +52,28 @@ const CollapsibleCard = ({ title, children, defaultOpen = false }) => {
     );
 };
 
+// Convert a JS Date (or date-like) to local YYYY-MM-DD (ISO-style) string
+const dateToLocalISO = (date) => {
+    const d = (date instanceof Date) ? date : new Date(date);
+    const tzOffset = d.getTimezoneOffset();
+    const local = new Date(d.getTime() - tzOffset * 60000);
+    return local.toISOString().split('T')[0];
+};
+
+// Debug hook placeholder — exists so code can call it regardless of dev instrumentation
+const debugSetLoading = (val, reason) => {
+    if (process.env.NODE_ENV === 'development') {
+        if (val) console.warn('[debugSetLoading] true', reason);
+        else console.log('[debugSetLoading] false', reason);
+    }
+};
+
 // --- Main App Component ---
 export default function App() {
     const [auth, setAuth] = useState(null);
     const [user, setUser] = useState(null);
-    const [isLoading, setIsLoading] = useState(true);
+    // We no longer block the UI with a global spinner; keep only the setter for internal timing
+    const [, setIsLoading] = useState(true);
     const [error, setError] = useState(null);
 
     useEffect(() => {
@@ -70,11 +86,24 @@ export default function App() {
             const app = initializeApp(firebaseConfig);
             const authInstance = getAuth(app);
             setAuth(authInstance);
+            // Add a debug log so we can see whether the auth listener fires.
+            const fallbackRef = { id: null };
             const unsubscribe = onAuthStateChanged(authInstance, (user) => {
+                console.warn('[Auth] onAuthStateChanged fired, user=', !!user);
                 setUser(user);
                 setIsLoading(false);
+                if (fallbackRef.id) {
+                    clearTimeout(fallbackRef.id);
+                    fallbackRef.id = null;
+                }
             });
-            return () => unsubscribe();
+            // Fallback: if auth state didn't arrive in 15s, stop showing a blocking spinner.
+            fallbackRef.id = setTimeout(() => {
+                console.warn('[Auth] onAuthStateChanged did not fire within 15s, clearing loading overlay');
+                setIsLoading(false);
+                fallbackRef.id = null;
+            }, 15000);
+            return () => { unsubscribe(); if (fallbackRef.id) clearTimeout(fallbackRef.id); };
         } catch (e) {
             console.error("Firebase init failed:", e);
             setError("Failed to initialize application.");
@@ -88,7 +117,7 @@ export default function App() {
         }
     };
 
-    if (isLoading) return <div className="fixed inset-0 bg-white z-50"><LoadingSpinner /></div>;
+    // No global spinner overlay — keep the app interactive while auth initializes
     if (error) return <div className="text-red-500 text-center p-8">{error}</div>;
 
     return (
@@ -156,13 +185,17 @@ function FinanceTracker({ user, onSignOut }) {
     const [db, setDb] = useState(null);
     const [page, setPage] = useState('dashboard');
     const [allTransactions, setAllTransactions] = useState([]);
+    const [lastTxnDoc, setLastTxnDoc] = useState(null);
+    const [hasMoreTxns, setHasMoreTxns] = useState(false);
+    const [loadingTxns, setLoadingTxns] = useState(false);
     const [recurringItems, setRecurringItems] = useState([]);
     const [displayCurrency, setDisplayCurrency] = useState(localStorage.getItem('lastReportCurrency') || 'USD');
     const [selectedMonths, setSelectedMonths] = useState([]);
     const [selectedCategories, setSelectedCategories] = useState([]);
     const [descriptionFilter, setDescriptionFilter] = useState("");
     const [latestRates, setLatestRates] = useState(null);
-    const [isLoading, setIsLoading] = useState(true);
+    // Remove page-level blocking spinner; keep only setter for async ops
+    const [, setIsLoading] = useState(false);
     const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
     const [showConfirmModal, setShowConfirmModal] = useState({ show: false, id: null, type: '' });
     const [editingTransaction, setEditingTransaction] = useState(null);
@@ -170,10 +203,71 @@ function FinanceTracker({ user, onSignOut }) {
     const [initialMonthSet, setInitialMonthSet] = useState(false);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const [sortConfig, setSortConfig] = useState({ key: 'transactionDate', direction: 'desc' });
+    // Used to prevent pushState when the page state was just set from a popstate event
+    const suppressPushRef = useRef(false);
+
+    // Helpers for month math
+    const prevYearMonth = (ym) => {
+        const d = new Date(ym + '-01T00:00:00');
+        d.setMonth(d.getMonth() - 1);
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        return `${y}-${m}`;
+    };
+    const currentAndPreviousYM = () => {
+        const now = new Date();
+        const cur = dateToLocalISO(now).slice(0, 7);
+        return { cur, prev: prevYearMonth(cur) };
+    };
 
     useEffect(() => {
-        setDb(getFirestore(initializeApp(firebaseConfig)));
+        try {
+            if (!getApps().length) {
+                initializeApp(firebaseConfig);
+            }
+            setDb(getFirestore());
+        } catch (e) {
+            console.warn('Failed to initialize Firestore in FinanceTracker', e);
+        }
     }, []);
+
+    // Sync page state with browser URL (simple history integration)
+    useEffect(() => {
+        const syncFromLocation = () => {
+            const p = window.location.pathname || '/';
+            // Indicate that the next page change was triggered by popstate so the push effect should skip pushing.
+            suppressPushRef.current = true;
+            if (p === '/reports') {
+                setPage('reports');
+                // Reset any previous transaction pagination state when navigating directly
+                setAllTransactions([]);
+                setLastTxnDoc(null);
+                setHasMoreTxns(false);
+                setLoadingTxns(false);
+            } else {
+                setPage('dashboard');
+            }
+        };
+        window.addEventListener('popstate', syncFromLocation);
+        // Initial sync from location should not create an extra history entry (we set suppressPushRef to skip the first push)
+        syncFromLocation();
+        return () => window.removeEventListener('popstate', syncFromLocation);
+    }, []);
+
+    // Push URL when page changes
+    useEffect(() => {
+        // If the page change originated from popstate or the initial sync, skip pushing a new history entry.
+        if (suppressPushRef.current) {
+            suppressPushRef.current = false;
+            return;
+        }
+        try {
+            if (page === 'reports') window.history.pushState({}, '', '/reports');
+            else window.history.pushState({}, '', '/');
+        } catch (e) {
+            // ignore
+        }
+    }, [page]);
     
     useEffect(() => {
         localStorage.setItem('lastReportCurrency', displayCurrency);
@@ -184,29 +278,207 @@ function FinanceTracker({ user, onSignOut }) {
         setTimeout(() => setToast({ show: false, message: '', type }), 4000);
     };
 
-    // Listeners for all transactions and recurring expenses
+    // Recurring items — only when Reports page is active
     useEffect(() => {
-        if (db) {
-            setIsLoading(true);
-            const summaryQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/transactions`), orderBy("transactionDate", "desc"));
-            const unsubscribeSummary = onSnapshot(summaryQuery, (snapshot) => {
-                const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                setAllTransactions(data);
-                setIsLoading(false);
-            });
+        if (!db) return;
 
-            const recurringQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/recurring`), orderBy("createdAt", "desc"));
-            const unsubscribeRecurring = onSnapshot(recurringQuery, (snapshot) => {
-                const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        let unsubscribeSummary = null;
+        let unsubscribeRecurring = null;
+        let unsubscribeLiveMonths = null;
+
+        // Recurring items are small; only load when on reports page to be safe
+        if (page === 'reports') {
+            console.warn('[Firestore] Attaching recurring listener');
+            const recurringQuery = query(collection(db, `artifacts/${appId}/families/${familyId}/recurring`), orderBy('createdAt', 'desc'));
+            unsubscribeRecurring = onSnapshot(recurringQuery, (snapshot) => {
+                console.warn('[Firestore] recurring snapshot size=', snapshot.size);
+                const data = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
                 setRecurringItems(data);
             });
 
-            return () => {
-                unsubscribeSummary();
-                unsubscribeRecurring();
-            };
+            // Live updates for current + previous months
+            const { prev } = (function() {
+                const now = new Date();
+                const cur = dateToLocalISO(now).slice(0, 7);
+                const d = new Date(cur + '-01T00:00:00');
+                d.setMonth(d.getMonth() - 1);
+                const y = d.getFullYear();
+                const m = String(d.getMonth() + 1).padStart(2, '0');
+                return { cur, prev: `${y}-${m}` };
+            })();
+            console.warn('[Firestore] Attaching live txns listener for latest window');
+            const txRef = collection(db, `artifacts/${appId}/families/${familyId}/transactions`);
+            // Listen to latest N docs; then filter to current+previous months in-memory to avoid Firestore type issues
+            const liveQuery = query(txRef, orderBy('transactionDate', 'desc'), limit(500));
+            unsubscribeLiveMonths = onSnapshot(liveQuery, (snapshot) => {
+                const live = snapshot.docs.map(d => {
+                    const docData = d.data();
+                    if (docData.transactionDate && docData.transactionDate.toDate) {
+                        docData.transactionDate = dateToLocalISO(docData.transactionDate.toDate());
+                    } else if (docData.transactionDate) {
+                        docData.transactionDate = dateToLocalISO(docData.transactionDate);
+                    } else {
+                        docData.transactionDate = dateToLocalISO(new Date());
+                    }
+                    return { id: d.id, ...docData };
+                }).filter(x => getYearMonthLocal(x.transactionDate) >= prev);
+                setAllTransactions(prevState => {
+                    const older = prevState.filter(t => getYearMonthLocal(t.transactionDate) < prev);
+                    return [...live, ...older];
+                });
+            });
+        }
+
+        return () => {
+            if (unsubscribeSummary) unsubscribeSummary();
+            if (unsubscribeRecurring) unsubscribeRecurring();
+            if (unsubscribeLiveMonths) unsubscribeLiveMonths();
+        };
+    }, [db, page]);
+
+    // Reports transactions: load only when page === 'reports' using explicit pagination (no real-time listener)
+    // Reports transactions: initial load includes current month + previous month
+    const fetchInitialTransactions = useCallback(async () => {
+        if (!db) return;
+        setLoadingTxns(true);
+        try {
+            const ref = collection(db, `artifacts/${appId}/families/${familyId}/transactions`);
+            const { prev } = currentAndPreviousYM();
+            let lastDoc = null;
+            let accum = [];
+            let crossedBoundary = false;
+            while (true) {
+                const q = lastDoc
+                    ? query(ref, orderBy('transactionDate', 'desc'), startAfter(lastDoc), limit(TRANSACTIONS_PER_PAGE))
+                    : query(ref, orderBy('transactionDate', 'desc'), limit(TRANSACTIONS_PER_PAGE));
+                const snap = await getDocs(q);
+                if (snap.empty) { setHasMoreTxns(false); break; }
+                console.warn('[Firestore] initial batch size=', snap.size);
+                const mapped = snap.docs.map(d => {
+                    const docData = d.data();
+                    if (docData.transactionDate && docData.transactionDate.toDate) {
+                        docData.transactionDate = dateToLocalISO(docData.transactionDate.toDate());
+                    } else if (docData.transactionDate) {
+                        docData.transactionDate = dateToLocalISO(docData.transactionDate);
+                    } else {
+                        docData.transactionDate = dateToLocalISO(new Date());
+                    }
+                    return { id: d.id, __doc: d, ...docData };
+                });
+                // Keep current and previous months only
+                const kept = mapped.filter(x => getYearMonthLocal(x.transactionDate) >= prev);
+                accum = accum.concat(kept.map(({ __doc, ...rest }) => rest));
+                lastDoc = snap.docs[snap.docs.length - 1];
+                const lastMapped = mapped[mapped.length - 1];
+                if (lastMapped && getYearMonthLocal(lastMapped.transactionDate) < prev) {
+                    crossedBoundary = true;
+                }
+                if (crossedBoundary) { setHasMoreTxns(true); break; }
+                if (snap.size < TRANSACTIONS_PER_PAGE) { setHasMoreTxns(false); break; }
+            }
+            setAllTransactions(accum);
+            setLastTxnDoc(lastDoc);
+        } finally {
+            setLoadingTxns(false);
         }
     }, [db]);
+
+    // Load one older month
+    const fetchMoreTransactions = useCallback(async () => {
+        if (!db || !lastTxnDoc || !hasMoreTxns) return;
+        setLoadingTxns(true);
+        try {
+            // Find oldest loaded month, then target its previous month
+            const oldestLoadedMonth = (allTransactions.length > 0)
+                ? allTransactions.reduce((min, t) => {
+                    const m = getYearMonthLocal(t.transactionDate);
+                    return min === null || m < min ? m : min;
+                }, null)
+                : null;
+            if (!oldestLoadedMonth) { setLoadingTxns(false); return; }
+            const targetMonth = prevYearMonth(oldestLoadedMonth);
+
+            const ref = collection(db, `artifacts/${appId}/families/${familyId}/transactions`);
+            let localLast = lastTxnDoc;
+            let append = [];
+            let done = false;
+            while (!done) {
+                const q = localLast
+                    ? query(ref, orderBy('transactionDate', 'desc'), startAfter(localLast), limit(TRANSACTIONS_PER_PAGE))
+                    : query(ref, orderBy('transactionDate', 'desc'), limit(TRANSACTIONS_PER_PAGE));
+                const snap = await getDocs(q);
+                if (snap.empty) { setHasMoreTxns(false); break; }
+                const mapped = snap.docs.map(d => {
+                    const docData = d.data();
+                    if (docData.transactionDate && docData.transactionDate.toDate) {
+                        docData.transactionDate = dateToLocalISO(docData.transactionDate.toDate());
+                    } else if (docData.transactionDate) {
+                        docData.transactionDate = dateToLocalISO(docData.transactionDate);
+                    } else {
+                        docData.transactionDate = dateToLocalISO(new Date());
+                    }
+                    return { id: d.id, __doc: d, ...docData };
+                });
+                const kept = mapped.filter(x => getYearMonthLocal(x.transactionDate) === targetMonth);
+                append = append.concat(kept.map(({ __doc, ...rest }) => rest));
+                localLast = snap.docs[snap.docs.length - 1];
+                const lastMapped = mapped[mapped.length - 1];
+                const lastMonth = lastMapped ? getYearMonthLocal(lastMapped.transactionDate) : null;
+                if (!lastMonth || lastMonth < targetMonth || snap.size < TRANSACTIONS_PER_PAGE) {
+                    done = true;
+                    setHasMoreTxns(!!lastMonth && lastMonth <= targetMonth && snap.size === TRANSACTIONS_PER_PAGE);
+                }
+            }
+            setAllTransactions(prev => [...prev, ...append]);
+            setLastTxnDoc(localLast || lastTxnDoc);
+        } finally {
+            setLoadingTxns(false);
+        }
+    }, [db, lastTxnDoc, hasMoreTxns, allTransactions]);
+
+    // Load all remaining
+    const fetchAllTransactions = useCallback(async () => {
+        if (!db) return;
+        setLoadingTxns(true);
+        try {
+            const ref = collection(db, `artifacts/${appId}/families/${familyId}/transactions`);
+            let localLast = lastTxnDoc;
+            let accum = [];
+            while (true) {
+                const q = localLast
+                    ? query(ref, orderBy('transactionDate', 'desc'), startAfter(localLast), limit(TRANSACTIONS_PER_PAGE))
+                    : query(ref, orderBy('transactionDate', 'desc'), limit(TRANSACTIONS_PER_PAGE));
+                const snap = await getDocs(q);
+                if (snap.empty) { setHasMoreTxns(false); break; }
+                const mapped = snap.docs.map(d => {
+                    const docData = d.data();
+                    if (docData.transactionDate && docData.transactionDate.toDate) {
+                        docData.transactionDate = dateToLocalISO(docData.transactionDate.toDate());
+                    } else if (docData.transactionDate) {
+                        docData.transactionDate = dateToLocalISO(docData.transactionDate);
+                    } else {
+                        docData.transactionDate = dateToLocalISO(new Date());
+                    }
+                    return { id: d.id, ...docData };
+                });
+                accum = accum.concat(mapped);
+                localLast = snap.docs[snap.docs.length - 1];
+                if (snap.size < TRANSACTIONS_PER_PAGE) { setHasMoreTxns(false); break; }
+            }
+            setAllTransactions(prev => [...prev, ...accum]);
+            setLastTxnDoc(localLast || lastTxnDoc);
+        } finally {
+            setLoadingTxns(false);
+        }
+    }, [db, lastTxnDoc]);
+
+    // Trigger initial fetch when entering Reports
+    useEffect(() => {
+        if (!db) return;
+        if (page === 'reports' && allTransactions.length === 0 && !loadingTxns) {
+            fetchInitialTransactions();
+        }
+    }, [db, page, fetchInitialTransactions, loadingTxns, allTransactions.length]);
 
     useEffect(() => {
         const manageRateCache = async () => {
@@ -382,18 +654,19 @@ function FinanceTracker({ user, onSignOut }) {
             const batch = writeBatch(db);
             const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
             
-            toAdd.forEach(item => {
+        toAdd.forEach(item => {
                 const { originalAmount, originalCurrency } = item;
                 const rate = latestRates[originalCurrency] || 1;
                 const amountInBase = originalAmount / rate;
                 const newTransaction = {
                     ...item,
                     originalAmount: parseFloat(originalAmount),
-                    transactionDate: Timestamp.now(),
+            // Store as local YYYY-MM-DD string for consistency
+            transactionDate: dateToLocalISO(new Date()),
                     baseCurrency: 'USD',
                     exchangeRateToBase: rate,
                     amountInBaseCurrency: parseFloat(amountInBase),
-                    createdAt: Timestamp.now(),
+            createdAt: Timestamp.now(),
                 };
                 const docRef = doc(collection(db, collectionPath));
                 batch.set(docRef, newTransaction);
@@ -447,7 +720,7 @@ function FinanceTracker({ user, onSignOut }) {
 
     return (
         <div className="bg-gray-100 min-h-screen font-sans text-gray-800">
-            {isLoading && <div className="fixed inset-0 bg-white bg-opacity-70 z-40"><LoadingSpinner /></div>}
+            {/* Removed page-level loading overlay */}
             {toast.show && <Toast message={toast.message} type={toast.type} onClose={() => setToast(t => ({ ...t, show: false }))} />}
             {showConfirmModal.show && <ConfirmationModal message={`Are you sure you want to permanently delete this ${showConfirmModal.type}?`} onConfirm={handleConfirmDelete} onCancel={() => setShowConfirmModal({ show: false, id: null, type: '' })} />}
             {editingTransaction && <EditModal transaction={editingTransaction} onSave={updateTransaction} onCancel={() => setEditingTransaction(null)} />}
@@ -456,11 +729,12 @@ function FinanceTracker({ user, onSignOut }) {
                 <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
                     <div className="flex items-center space-x-4">
                          <h1 className="text-3xl font-bold text-blue-600">Family Finance</h1>
-                         <nav className="hidden md:flex space-x-2 rounded-lg bg-gray-200 p-1">
-                            <button onClick={() => setPage('dashboard')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'dashboard' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Dashboard</button>
-                            <button onClick={() => setPage('recurring')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'recurring' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Recurring</button>
-                            <button onClick={() => setPage('import')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'import' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Import</button>
-                         </nav>
+                                 <nav className="hidden md:flex space-x-2 rounded-lg bg-gray-200 p-1">
+                                     <button onClick={() => setPage('dashboard')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'dashboard' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Dashboard</button>
+                                     <button onClick={() => setPage('reports')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'reports' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Reports</button>
+                                     <button onClick={() => setPage('recurring')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'recurring' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Recurring</button>
+                                     <button onClick={() => setPage('import')} className={`px-3 py-1 rounded-md text-sm font-semibold ${page === 'import' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>Import</button>
+                                 </nav>
                     </div>
                     <div className="hidden md:block">
                         <button onClick={onSignOut} className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-md transition">Sign Out</button>
@@ -475,6 +749,7 @@ function FinanceTracker({ user, onSignOut }) {
                     <div className="md:hidden bg-white border-t">
                         <nav className="flex flex-col p-4 space-y-2">
                             <button onClick={() => { setPage('dashboard'); setIsMenuOpen(false); }} className="text-left p-2 rounded-md hover:bg-gray-100">Dashboard</button>
+                            <button onClick={() => { setPage('reports'); setIsMenuOpen(false); }} className="text-left p-2 rounded-md hover:bg-gray-100">Reports</button>
                             <button onClick={() => { setPage('recurring'); setIsMenuOpen(false); }} className="text-left p-2 rounded-md hover:bg-gray-100">Recurring</button>
                             <button onClick={() => { setPage('import'); setIsMenuOpen(false); }} className="text-left p-2 rounded-md hover:bg-gray-100">Import</button>
                             <button onClick={onSignOut} className="text-left p-2 rounded-md text-red-600 hover:bg-red-50">Sign Out</button>
@@ -485,23 +760,59 @@ function FinanceTracker({ user, onSignOut }) {
 
             <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
                 {page === 'dashboard' && (
+                    <div className="grid grid-cols-1 gap-8">
+                        <div className="space-y-8">
+                            <TransactionForm onSubmit={addTransaction} allTransactions={allTransactions} />
+                        </div>
+                    </div>
+                )}
+
+                {page === 'reports' && (
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                         <div className="lg:col-span-1 space-y-8">
-                            <TransactionForm onSubmit={addTransaction} allTransactions={allTransactions} />
-                             <CollapsibleCard title="Summary">
+                            <CollapsibleCard title="Summary" defaultOpen={true}>
                                 <SummaryReport summary={reportData} currency={displayCurrency} onCurrencyChange={setDisplayCurrency} />
                             </CollapsibleCard>
                         </div>
                         <div className="lg:col-span-2 space-y-8">
-                            <CollapsibleCard title="Filters">
+                            <CollapsibleCard title="Filters" defaultOpen={true}>
                                 <MonthFilter availableMonths={availableMonths} selectedMonths={selectedMonths} onSelectionChange={setSelectedMonths} />
                                 <CategoryFilter selectedCategories={selectedCategories} onSelectionChange={setSelectedCategories} />
                             </CollapsibleCard>
-                             <CollapsibleCard title="Charts">
+                             <CollapsibleCard title="Charts" defaultOpen={true}>
                                 <CategoryChart data={reportData.expenseChartData} currency={displayCurrency} />
                                 <TrendChartComponent data={reportData.trendChartData} currency={displayCurrency} />
                             </CollapsibleCard>
-                            <TransactionList transactions={paginatedTransactions} onDelete={(id) => requestDelete(id, 'transaction')} onEdit={setEditingTransaction} displayCurrency={displayCurrency} latestRates={latestRates} onNextPage={() => setCurrentPage(p => Math.min(p + 1, totalPages))} onPrevPage={() => setCurrentPage(p => Math.max(p - 1, 1))} currentPage={currentPage} totalPages={totalPages} sortConfig={sortConfig} setSortConfig={setSortConfig} descriptionFilter={descriptionFilter} setDescriptionFilter={setDescriptionFilter} />
+                            <div className="bg-white p-6 rounded-lg shadow-md">
+                                <TransactionList
+                                    transactions={paginatedTransactions}
+                                    onDelete={(id) => requestDelete(id, 'transaction')}
+                                    onEdit={setEditingTransaction}
+                                    displayCurrency={displayCurrency}
+                                    latestRates={latestRates}
+                                    onNextPage={() => setCurrentPage(p => Math.min(p + 1, totalPages))}
+                                    onPrevPage={() => setCurrentPage(p => Math.max(p - 1, 1))}
+                                    currentPage={currentPage}
+                                    totalPages={totalPages}
+                                    sortConfig={sortConfig}
+                                    setSortConfig={setSortConfig}
+                                    descriptionFilter={descriptionFilter}
+                                    setDescriptionFilter={setDescriptionFilter}
+                                />
+                                <div className="mt-4 flex items-center justify-between gap-2 flex-wrap">
+                                    <div className="text-sm text-gray-500">{loadingTxns ? 'Loading…' : hasMoreTxns ? '' : 'No more transactions'}</div>
+                                    <div className="flex gap-2 ml-auto">
+                                        {hasMoreTxns && (
+                                            <button onClick={fetchMoreTransactions} disabled={loadingTxns} className="px-4 py-2 bg-gray-200 text-gray-800 rounded disabled:opacity-50">
+                                                {loadingTxns ? 'Loading…' : 'Load more (1 month)'}
+                                            </button>
+                                        )}
+                                        <button onClick={fetchAllTransactions} disabled={loadingTxns || !hasMoreTxns} className="px-4 py-2 bg-gray-200 text-gray-800 rounded disabled:opacity-50">
+                                            {loadingTxns ? 'Loading…' : 'Load all transactions'}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 )}
@@ -552,9 +863,13 @@ function MonthFilter({ availableMonths, selectedMonths, onSelectionChange }) {
 
 
 function CategoryFilter({ selectedCategories, onSelectionChange }) {
+    const allCategories = useMemo(() => [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES], []);
+
     const handleCategoryClick = (category) => {
         if (category === 'All') {
-            onSelectionChange([]);
+            // Toggle: if all are selected, clear; otherwise select all
+            const allSelected = allCategories.every(c => selectedCategories.includes(c));
+            onSelectionChange(allSelected ? [] : allCategories);
             return;
         }
         const newSelection = selectedCategories.includes(category)
@@ -563,13 +878,15 @@ function CategoryFilter({ selectedCategories, onSelectionChange }) {
         onSelectionChange(newSelection);
     };
 
+    const isAllSelected = selectedCategories.length === 0 || allCategories.every(c => selectedCategories.includes(c));
+
     return (
         <div className="mt-4">
-            <div className="flex justify-between items-center mb-3">
+                <div className="flex justify-between items-center mb-3">
                  <h3 className="text-lg font-bold">Filter by Category</h3>
                  <button
                     onClick={() => handleCategoryClick('All')}
-                    className={`px-3 py-1 text-sm rounded-full transition ${selectedCategories.length === 0 ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                    className={`px-3 py-1 text-sm rounded-full transition ${isAllSelected ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
                 >
                     All
                 </button>
