@@ -14,8 +14,15 @@ try {
 }
 
 // --- App & Family ID ---
-const appId = 'family-finance-tracker-v1';
-const familyId = 'shared-family-data'; // All users will write to this single data store.
+// Allow overriding via env so development can use a distinct namespace.
+// In .env.local set for example:
+//   REACT_APP_APP_ID=family-finance-tracker-dev
+//   REACT_APP_FAMILY_ID=shared-family-data-dev
+// Fallback keeps existing production values.
+const appId = process.env.REACT_APP_APP_ID || (process.env.NODE_ENV === 'development'
+    ? 'family-finance-tracker-dev'
+    : 'family-finance-tracker-v1');
+const familyId = process.env.REACT_APP_FAMILY_ID || 'shared-family-data'; // Namespace for family data
 const TRANSACTIONS_PER_PAGE = 25;
 
 // --- Exchange Rate API Key ---
