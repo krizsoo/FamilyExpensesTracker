@@ -81,7 +81,7 @@ export default function App() {
     const [user, setUser] = useState(null);
     // We no longer block the UI with a global spinner; keep only the setter for internal timing
     const [, setIsLoading] = useState(true);
-    const [error, setError] = useState(null);
+        const [error, setError] = useState('');
 
     useEffect(() => {
         if (!firebaseConfig.apiKey || firebaseConfig.apiKey === "YOUR_API_KEY") {
@@ -104,13 +104,13 @@ export default function App() {
                     fallbackRef.id = null;
                 }
             });
-            // Fallback: if auth state didn't arrive in 15s, stop showing a blocking spinner.
-            fallbackRef.id = setTimeout(() => {
-                console.warn('[Auth] onAuthStateChanged did not fire within 15s, clearing loading overlay');
-                setIsLoading(false);
-                fallbackRef.id = null;
-            }, 15000);
-            return () => { unsubscribe(); if (fallbackRef.id) clearTimeout(fallbackRef.id); };
+        const [categoryUsage, setCategoryUsage] = useState(() => {
+            try {
+                const raw = localStorage.getItem('categoryUsageV1');
+                if (raw) return JSON.parse(raw);
+            } catch {}
+            return { Expense: {}, Income: {} };
+        });
         } catch (e) {
             console.error("Firebase init failed:", e);
             setError("Failed to initialize application.");
@@ -223,8 +223,6 @@ function FinanceTracker({ user, onSignOut }) {
 
     useEffect(() => {
         try { localStorage.setItem('categoryUsageV1', JSON.stringify(categoryUsage)); } catch {}
-    // Expose lightweight cache for child components without prop-drilling (simple, non-secure)
-    try { window.__categoryUsageCache = categoryUsage; } catch {}
     }, [categoryUsage]);
 
     const incrementCategoryUsage = useCallback((type, category, delta = 1) => {
@@ -1250,16 +1248,14 @@ function TransactionForm({ onSubmit, allTransactions }) {
     const [formError, setFormError] = useState('');
 
     const sortedCategories = useMemo(() => {
-        // Pull persisted usage if available (attached to FinanceTracker via closure)
-        const usage = (window.__categoryUsageCache || {}); // fallback if not injected
         const baseCategories = type === 'Expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
-        const counts = usage[type] || {};
+        const counts = (categoryUsage && categoryUsage[type]) || {};
         const ranked = baseCategories.map(c => ({ c, n: counts[c] || 0 }))
             .sort((a, b) => b.n - a.n);
         const top5 = ranked.slice(0, 5).map(r => r.c);
         const rest = baseCategories.filter(c => !top5.includes(c)).sort();
         return [...top5, ...rest];
-    }, [type]);
+    }, [type, categoryUsage]);
 
     useEffect(() => {
         setCategory(sortedCategories[0]);
@@ -1342,15 +1338,14 @@ function EditModal({ transaction, onSave, onCancel, allTransactions = [] }) {
 
     // Build frequency-based ordering (top 5 then alphabetical rest)
     const sortedCategories = useMemo(() => {
-        const usage = (window.__categoryUsageCache || {});
         const baseCategories = formData.type === 'Expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
-        const counts = usage[formData.type] || {};
+        const counts = (categoryUsage && categoryUsage[formData.type]) || {};
         const ranked = baseCategories.map(c => ({ c, n: counts[c] || 0 }))
             .sort((a, b) => b.n - a.n);
         const top5 = ranked.slice(0, 5).map(r => r.c);
         const rest = baseCategories.filter(c => !top5.includes(c)).sort();
         return [...top5, ...rest];
-    }, [formData.type]);
+    }, [formData.type, categoryUsage]);
 
     const handleChange = (e) => {
         const { name, value } = e.target;
