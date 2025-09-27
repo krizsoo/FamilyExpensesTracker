@@ -212,6 +212,38 @@ function FinanceTracker({ user, onSignOut }) {
     const [sortConfig, setSortConfig] = useState({ key: 'transactionDate', direction: 'desc' });
     // Used to prevent pushState when the page state was just set from a popstate event
     const suppressPushRef = useRef(false);
+    // Persisted category usage (separate for Expense / Income so dashboard frequency works w/out Reports loaded)
+    const [categoryUsage, setCategoryUsage] = useState(() => {
+        try {
+            const raw = localStorage.getItem('categoryUsageV1');
+            if (raw) return JSON.parse(raw);
+        } catch {}
+        return { Expense: {}, Income: {} };
+    });
+
+    useEffect(() => {
+        try { localStorage.setItem('categoryUsageV1', JSON.stringify(categoryUsage)); } catch {}
+    // Expose lightweight cache for child components without prop-drilling (simple, non-secure)
+    try { window.__categoryUsageCache = categoryUsage; } catch {}
+    }, [categoryUsage]);
+
+    const incrementCategoryUsage = useCallback((type, category, delta = 1) => {
+        if (!type || !category) return;
+        setCategoryUsage(prev => {
+            const next = { ...prev, [type]: { ...prev[type] } };
+            next[type][category] = (next[type][category] || 0) + delta;
+            return next;
+        });
+    }, []);
+
+    const rebuildCategoryUsageFromTransactions = useCallback((txns) => {
+        const usage = { Expense: {}, Income: {} };
+        txns.forEach(t => {
+            if (!t || !t.type || !t.category) return;
+            usage[t.type][t.category] = (usage[t.type][t.category] || 0) + 1;
+        });
+        setCategoryUsage(usage);
+    }, []);
 
     // Helpers for month math
     const prevYearMonth = (ym) => {
@@ -385,10 +417,12 @@ function FinanceTracker({ user, onSignOut }) {
             }
             setAllTransactions(accum);
             setLastTxnDoc(lastDoc);
+        // Rebuild usage from the two months we have so far if we have more info than current cache
+        rebuildCategoryUsageFromTransactions(accum);
         } finally {
             setLoadingTxns(false);
         }
-    }, [db]);
+    }, [db, rebuildCategoryUsageFromTransactions]);
 
     // Load one older month
     const fetchMoreTransactions = useCallback(async () => {
@@ -438,10 +472,12 @@ function FinanceTracker({ user, onSignOut }) {
             }
             setAllTransactions(prev => [...prev, ...append]);
             setLastTxnDoc(localLast || lastTxnDoc);
+        // Extend usage with the newly appended month
+        rebuildCategoryUsageFromTransactions([...allTransactions, ...append]);
         } finally {
             setLoadingTxns(false);
         }
-    }, [db, lastTxnDoc, hasMoreTxns, allTransactions]);
+    }, [db, lastTxnDoc, hasMoreTxns, allTransactions, rebuildCategoryUsageFromTransactions]);
 
     // Load all remaining
     const fetchAllTransactions = useCallback(async () => {
@@ -474,10 +510,12 @@ function FinanceTracker({ user, onSignOut }) {
             }
             setAllTransactions(prev => [...prev, ...accum]);
             setLastTxnDoc(localLast || lastTxnDoc);
+        // Full rebuild for entire dataset loaded
+        rebuildCategoryUsageFromTransactions([...allTransactions, ...accum]);
         } finally {
             setLoadingTxns(false);
         }
-    }, [db, lastTxnDoc]);
+    }, [db, lastTxnDoc, allTransactions, rebuildCategoryUsageFromTransactions]);
 
     // Trigger initial fetch when entering Reports
     useEffect(() => {
@@ -591,9 +629,10 @@ function FinanceTracker({ user, onSignOut }) {
             const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
             // Store transactionDate as string YYYY-MM-DD
             await addDoc(collection(db, collectionPath), { ...data, originalAmount: parseFloat(originalAmount), transactionDate: data.transactionDate, baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase), createdAt: Date.now() });
+        incrementCategoryUsage(data.type, data.category);
             showToast(`${data.type} added successfully!`);
         } catch (e) { showToast(`Failed to add transaction: ${e.message}`, 'error'); } finally { setIsLoading(false); }
-    }, [db, latestRates]);
+    }, [db, latestRates, incrementCategoryUsage]);
 
     const updateTransaction = useCallback(async (updatedData) => {
         if (!db || !editingTransaction || !latestRates) { showToast("Data not ready, please try again.", "error"); return; }
@@ -606,10 +645,11 @@ function FinanceTracker({ user, onSignOut }) {
             // Store transactionDate as string YYYY-MM-DD
             const payload = { ...updatedData, originalAmount: parseFloat(originalAmount), transactionDate: updatedData.transactionDate, baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase) };
             await updateDoc(docRef, payload);
+        incrementCategoryUsage(updatedData.type, updatedData.category);
             showToast("Transaction updated!");
             setEditingTransaction(null);
         } catch (e) { showToast(`Update failed: ${e.message}`, 'error'); } finally { setIsLoading(false); }
-    }, [db, editingTransaction, latestRates]);
+    }, [db, editingTransaction, latestRates, incrementCategoryUsage]);
 
     const requestDelete = (id, type) => setShowConfirmModal({ show: true, id, type });
     
@@ -1210,22 +1250,16 @@ function TransactionForm({ onSubmit, allTransactions }) {
     const [formError, setFormError] = useState('');
 
     const sortedCategories = useMemo(() => {
+        // Pull persisted usage if available (attached to FinanceTracker via closure)
+        const usage = (window.__categoryUsageCache || {}); // fallback if not injected
         const baseCategories = type === 'Expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
-        const relevantTransactions = allTransactions.filter(t => t.type === type);
-        
-        const counts = relevantTransactions.reduce((acc, t) => {
-            acc[t.category] = (acc[t.category] || 0) + 1;
-            return acc;
-        }, {});
-
-        const sorted = baseCategories.map(c => ({ category: c, count: counts[c] || 0 }))
-            .sort((a, b) => b.count - a.count);
-        
-        const top5 = sorted.slice(0, 5).map(item => item.category);
+        const counts = usage[type] || {};
+        const ranked = baseCategories.map(c => ({ c, n: counts[c] || 0 }))
+            .sort((a, b) => b.n - a.n);
+        const top5 = ranked.slice(0, 5).map(r => r.c);
         const rest = baseCategories.filter(c => !top5.includes(c)).sort();
-        
         return [...top5, ...rest];
-    }, [allTransactions, type]);
+    }, [type]);
 
     useEffect(() => {
         setCategory(sortedCategories[0]);
@@ -1308,18 +1342,15 @@ function EditModal({ transaction, onSave, onCancel, allTransactions = [] }) {
 
     // Build frequency-based ordering (top 5 then alphabetical rest)
     const sortedCategories = useMemo(() => {
+        const usage = (window.__categoryUsageCache || {});
         const baseCategories = formData.type === 'Expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
-        const relevantTransactions = allTransactions.filter(t => t.type === formData.type);
-        const counts = relevantTransactions.reduce((acc, t) => {
-            acc[t.category] = (acc[t.category] || 0) + 1;
-            return acc;
-        }, {});
-        const ranked = baseCategories.map(c => ({ category: c, count: counts[c] || 0 }))
-            .sort((a, b) => b.count - a.count);
-        const top5 = ranked.slice(0, 5).map(r => r.category);
+        const counts = usage[formData.type] || {};
+        const ranked = baseCategories.map(c => ({ c, n: counts[c] || 0 }))
+            .sort((a, b) => b.n - a.n);
+        const top5 = ranked.slice(0, 5).map(r => r.c);
         const rest = baseCategories.filter(c => !top5.includes(c)).sort();
         return [...top5, ...rest];
-    }, [allTransactions, formData.type]);
+    }, [formData.type]);
 
     const handleChange = (e) => {
         const { name, value } = e.target;
