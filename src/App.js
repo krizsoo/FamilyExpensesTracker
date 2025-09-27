@@ -723,7 +723,7 @@ function FinanceTracker({ user, onSignOut }) {
             {/* Removed page-level loading overlay */}
             {toast.show && <Toast message={toast.message} type={toast.type} onClose={() => setToast(t => ({ ...t, show: false }))} />}
             {showConfirmModal.show && <ConfirmationModal message={`Are you sure you want to permanently delete this ${showConfirmModal.type}?`} onConfirm={handleConfirmDelete} onCancel={() => setShowConfirmModal({ show: false, id: null, type: '' })} />}
-            {editingTransaction && <EditModal transaction={editingTransaction} onSave={updateTransaction} onCancel={() => setEditingTransaction(null)} />}
+            {editingTransaction && <EditModal transaction={editingTransaction} allTransactions={allTransactions} onSave={updateTransaction} onCancel={() => setEditingTransaction(null)} />}
             
             <header className="bg-white shadow-md">
                 <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
@@ -1282,7 +1282,7 @@ function TransactionForm({ onSubmit, allTransactions }) {
     );
 }
 
-function EditModal({ transaction, onSave, onCancel }) {
+function EditModal({ transaction, onSave, onCancel, allTransactions = [] }) {
     const [formData, setFormData] = useState({
         ...transaction,
         transactionDate: typeof transaction.transactionDate === 'string'
@@ -1298,6 +1298,21 @@ function EditModal({ transaction, onSave, onCancel }) {
             setFormData(prev => ({ ...prev, category: categories[0] }));
         }
     }, [formData.type, formData.category]);
+
+    // Build frequency-based ordering (top 5 then alphabetical rest)
+    const sortedCategories = useMemo(() => {
+        const baseCategories = formData.type === 'Expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
+        const relevantTransactions = allTransactions.filter(t => t.type === formData.type);
+        const counts = relevantTransactions.reduce((acc, t) => {
+            acc[t.category] = (acc[t.category] || 0) + 1;
+            return acc;
+        }, {});
+        const ranked = baseCategories.map(c => ({ category: c, count: counts[c] || 0 }))
+            .sort((a, b) => b.count - a.count);
+        const top5 = ranked.slice(0, 5).map(r => r.category);
+        const rest = baseCategories.filter(c => !top5.includes(c)).sort();
+        return [...top5, ...rest];
+    }, [allTransactions, formData.type]);
 
     const handleChange = (e) => {
         const { name, value } = e.target;
@@ -1338,7 +1353,7 @@ function EditModal({ transaction, onSave, onCancel }) {
                         <div>
                             <label className="block text-sm font-medium text-gray-700">Category</label>
                             <select name="category" value={formData.category} onChange={handleChange} className="mt-1 block w-full px-3 py-2 border-gray-300 rounded-md shadow-sm">
-                                {(formData.type === 'Expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES).map(c => <option key={c}>{c}</option>)}
+                                {sortedCategories.map(c => <option key={c}>{c}</option>)}
                             </select>
                         </div>
                         <div>
