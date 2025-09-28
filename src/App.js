@@ -104,13 +104,6 @@ export default function App() {
                     fallbackRef.id = null;
                 }
             });
-        const [categoryUsage, setCategoryUsage] = useState(() => {
-            try {
-                const raw = localStorage.getItem('categoryUsageV1');
-                if (raw) return JSON.parse(raw);
-            } catch {}
-            return { Expense: {}, Income: {} };
-        });
         } catch (e) {
             console.error("Firebase init failed:", e);
             setError("Failed to initialize application.");
@@ -768,7 +761,7 @@ function FinanceTracker({ user, onSignOut }) {
             {/* Removed page-level loading overlay */}
             {toast.show && <Toast message={toast.message} type={toast.type} onClose={() => setToast(t => ({ ...t, show: false }))} />}
             {showConfirmModal.show && <ConfirmationModal message={`Are you sure you want to permanently delete this ${showConfirmModal.type}?`} onConfirm={handleConfirmDelete} onCancel={() => setShowConfirmModal({ show: false, id: null, type: '' })} />}
-            {editingTransaction && <EditModal transaction={editingTransaction} allTransactions={allTransactions} onSave={updateTransaction} onCancel={() => setEditingTransaction(null)} />}
+            {editingTransaction && <EditModal transaction={editingTransaction} allTransactions={allTransactions} categoryUsage={categoryUsage} onSave={updateTransaction} onCancel={() => setEditingTransaction(null)} />}
             
             <header className="bg-white shadow-md">
                 <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
@@ -807,7 +800,7 @@ function FinanceTracker({ user, onSignOut }) {
                 {page === 'dashboard' && (
                     <div className="grid grid-cols-1 gap-8">
                         <div className="space-y-8">
-                            <TransactionForm onSubmit={addTransaction} allTransactions={allTransactions} />
+                            <TransactionForm onSubmit={addTransaction} allTransactions={allTransactions} categoryUsage={categoryUsage} />
                         </div>
                     </div>
                 )}
@@ -1238,7 +1231,7 @@ function RecurringItemForm({ onSubmit, allTransactions }) {
 }
 
 
-function TransactionForm({ onSubmit, allTransactions }) {
+function TransactionForm({ onSubmit, allTransactions, categoryUsage }) {
     const [type, setType] = useState('Expense');
     const [amount, setAmount] = useState('');
     const [currency, setCurrency] = useState(localStorage.getItem('lastUsedCurrency') || 'USD');
@@ -1319,7 +1312,7 @@ function TransactionForm({ onSubmit, allTransactions }) {
     );
 }
 
-function EditModal({ transaction, onSave, onCancel, allTransactions = [] }) {
+function EditModal({ transaction, onSave, onCancel, allTransactions = [], categoryUsage }) {
     const [formData, setFormData] = useState({
         ...transaction,
         transactionDate: typeof transaction.transactionDate === 'string'
