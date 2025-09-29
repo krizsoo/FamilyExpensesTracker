@@ -59,12 +59,43 @@ const CollapsibleCard = ({ title, children, defaultOpen = false }) => {
     );
 };
 
-// Convert a JS Date (or date-like) to local YYYY-MM-DD (ISO-style) string
+// Convert a JS Date (or date-like) to a local calendar date string YYYY-MM-DD without shifting across timezones.
+// Previous version subtracted timezone offset then used toISOString (UTC), which could roll date back a day for late-night times.
+// This version reads local parts directly to avoid off-by-one issues.
 const dateToLocalISO = (date) => {
     const d = (date instanceof Date) ? date : new Date(date);
-    const tzOffset = d.getTimezoneOffset();
-    const local = new Date(d.getTime() - tzOffset * 60000);
-    return local.toISOString().split('T')[0];
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+};
+
+// Parse a YYYY-MM-DD (assumed local calendar date) into a stable canonical string.
+// If input already matches, return it; if Date provided, convert via dateToLocalISO.
+const normalizeDateInput = (value) => {
+    if (!value) return dateToLocalISO(new Date());
+    if (value instanceof Date) return dateToLocalISO(value);
+    if (typeof value === 'string') {
+        // Accept either YYYY-MM-DD or full ISO; extract date part safely.
+        const m = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+        // Fallback: construct Date and convert.
+        return dateToLocalISO(new Date(value));
+    }
+    return dateToLocalISO(new Date(value));
+};
+
+// Preserve already-stored transactionDate values; only format Firestore Timestamps.
+const coerceTransactionDate = (raw) => {
+    if (!raw) return dateToLocalISO(new Date());
+    if (typeof raw === 'string') {
+        // Assume stored as canonical YYYY-MM-DD already; if longer ISO, slice first 10.
+        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+        return raw.slice(0,10);
+    }
+    // Firestore Timestamp object with toDate()
+    if (raw.toDate) return dateToLocalISO(raw.toDate());
+    return dateToLocalISO(raw);
 };
 
 // Debug hook placeholder — exists so code can call it regardless of dev instrumentation
@@ -343,13 +374,7 @@ function FinanceTracker({ user, onSignOut }) {
             unsubscribeLiveMonths = onSnapshot(liveQuery, (snapshot) => {
                 const live = snapshot.docs.map(d => {
                     const docData = d.data();
-                    if (docData.transactionDate && docData.transactionDate.toDate) {
-                        docData.transactionDate = dateToLocalISO(docData.transactionDate.toDate());
-                    } else if (docData.transactionDate) {
-                        docData.transactionDate = dateToLocalISO(docData.transactionDate);
-                    } else {
-                        docData.transactionDate = dateToLocalISO(new Date());
-                    }
+                    docData.transactionDate = coerceTransactionDate(docData.transactionDate);
                     return { id: d.id, ...docData };
                 }).filter(x => getYearMonthLocal(x.transactionDate) >= prev);
                 setAllTransactions(prevState => {
@@ -386,13 +411,7 @@ function FinanceTracker({ user, onSignOut }) {
                 console.warn('[Firestore] initial batch size=', snap.size);
                 const mapped = snap.docs.map(d => {
                     const docData = d.data();
-                    if (docData.transactionDate && docData.transactionDate.toDate) {
-                        docData.transactionDate = dateToLocalISO(docData.transactionDate.toDate());
-                    } else if (docData.transactionDate) {
-                        docData.transactionDate = dateToLocalISO(docData.transactionDate);
-                    } else {
-                        docData.transactionDate = dateToLocalISO(new Date());
-                    }
+                    docData.transactionDate = coerceTransactionDate(docData.transactionDate);
                     return { id: d.id, __doc: d, ...docData };
                 });
                 // Keep current and previous months only
@@ -442,13 +461,7 @@ function FinanceTracker({ user, onSignOut }) {
                 if (snap.empty) { setHasMoreTxns(false); break; }
                 const mapped = snap.docs.map(d => {
                     const docData = d.data();
-                    if (docData.transactionDate && docData.transactionDate.toDate) {
-                        docData.transactionDate = dateToLocalISO(docData.transactionDate.toDate());
-                    } else if (docData.transactionDate) {
-                        docData.transactionDate = dateToLocalISO(docData.transactionDate);
-                    } else {
-                        docData.transactionDate = dateToLocalISO(new Date());
-                    }
+                    docData.transactionDate = coerceTransactionDate(docData.transactionDate);
                     return { id: d.id, __doc: d, ...docData };
                 });
                 const kept = mapped.filter(x => getYearMonthLocal(x.transactionDate) === targetMonth);
@@ -486,13 +499,7 @@ function FinanceTracker({ user, onSignOut }) {
                 if (snap.empty) { setHasMoreTxns(false); break; }
                 const mapped = snap.docs.map(d => {
                     const docData = d.data();
-                    if (docData.transactionDate && docData.transactionDate.toDate) {
-                        docData.transactionDate = dateToLocalISO(docData.transactionDate.toDate());
-                    } else if (docData.transactionDate) {
-                        docData.transactionDate = dateToLocalISO(docData.transactionDate);
-                    } else {
-                        docData.transactionDate = dateToLocalISO(new Date());
-                    }
+                    docData.transactionDate = coerceTransactionDate(docData.transactionDate);
                     return { id: d.id, ...docData };
                 });
                 accum = accum.concat(mapped);
@@ -619,7 +626,8 @@ function FinanceTracker({ user, onSignOut }) {
             const amountInBase = originalAmount / rate;
             const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
             // Store transactionDate as string YYYY-MM-DD
-            await addDoc(collection(db, collectionPath), { ...data, originalAmount: parseFloat(originalAmount), transactionDate: data.transactionDate, baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase), createdAt: Date.now() });
+            const txDate = normalizeDateInput(data.transactionDate);
+            await addDoc(collection(db, collectionPath), { ...data, originalAmount: parseFloat(originalAmount), transactionDate: txDate, baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase), createdAt: Date.now() });
         incrementCategoryUsage(data.type, data.category);
             showToast(`${data.type} added successfully!`);
         } catch (e) { showToast(`Failed to add transaction: ${e.message}`, 'error'); } finally { setIsLoading(false); }
@@ -634,7 +642,8 @@ function FinanceTracker({ user, onSignOut }) {
             const rate = latestRates[originalCurrency] || 1;
             const amountInBase = originalAmount / rate;
             // Store transactionDate as string YYYY-MM-DD
-            const payload = { ...updatedData, originalAmount: parseFloat(originalAmount), transactionDate: updatedData.transactionDate, baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase) };
+            const txDate = normalizeDateInput(updatedData.transactionDate);
+            const payload = { ...updatedData, originalAmount: parseFloat(originalAmount), transactionDate: txDate, baseCurrency: 'USD', exchangeRateToBase: rate, amountInBaseCurrency: parseFloat(amountInBase) };
             await updateDoc(docRef, payload);
         incrementCategoryUsage(updatedData.type, updatedData.category);
             showToast("Transaction updated!");
@@ -700,7 +709,7 @@ function FinanceTracker({ user, onSignOut }) {
                     ...item,
                     originalAmount: parseFloat(originalAmount),
             // Store as local YYYY-MM-DD string for consistency
-            transactionDate: dateToLocalISO(new Date()),
+            transactionDate: normalizeDateInput(new Date()),
                     baseCurrency: 'USD',
                     exchangeRateToBase: rate,
                     amountInBaseCurrency: parseFloat(amountInBase),
