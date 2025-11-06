@@ -375,7 +375,8 @@ function FinanceTracker({ user, onSignOut }) {
                 const live = snapshot.docs.map(d => {
                     const docData = d.data();
                     docData.transactionDate = coerceTransactionDate(docData.transactionDate);
-                    return { id: d.id, ...docData };
+                    const { id: _ignored, ...rest } = docData;
+                    return { ...rest, id: d.id };
                 }).filter(x => getYearMonthLocal(x.transactionDate) >= prev);
                 setAllTransactions(prevState => {
                     const older = prevState.filter(t => getYearMonthLocal(t.transactionDate) < prev);
@@ -412,7 +413,8 @@ function FinanceTracker({ user, onSignOut }) {
                 const mapped = snap.docs.map(d => {
                     const docData = d.data();
                     docData.transactionDate = coerceTransactionDate(docData.transactionDate);
-                    return { id: d.id, __doc: d, ...docData };
+                    const { id: _ignored, ...rest } = docData;
+                    return { __doc: d, ...rest, id: d.id };
                 });
                 // Keep current and previous months only
                 const kept = mapped.filter(x => getYearMonthLocal(x.transactionDate) >= prev);
@@ -462,7 +464,8 @@ function FinanceTracker({ user, onSignOut }) {
                 const mapped = snap.docs.map(d => {
                     const docData = d.data();
                     docData.transactionDate = coerceTransactionDate(docData.transactionDate);
-                    return { id: d.id, __doc: d, ...docData };
+                    const { id: _ignored, ...rest } = docData;
+                    return { __doc: d, ...rest, id: d.id };
                 });
                 const kept = mapped.filter(x => getYearMonthLocal(x.transactionDate) === targetMonth);
                 append = append.concat(kept.map(({ __doc, ...rest }) => rest));
@@ -500,7 +503,8 @@ function FinanceTracker({ user, onSignOut }) {
                 const mapped = snap.docs.map(d => {
                     const docData = d.data();
                     docData.transactionDate = coerceTransactionDate(docData.transactionDate);
-                    return { id: d.id, ...docData };
+                    const { id: _ignored, ...rest } = docData;
+                    return { ...rest, id: d.id };
                 });
                 accum = accum.concat(mapped);
                 localLast = snap.docs[snap.docs.length - 1];
@@ -701,12 +705,14 @@ function FinanceTracker({ user, onSignOut }) {
             const batch = writeBatch(db);
             const collectionPath = `artifacts/${appId}/families/${familyId}/transactions`;
             
-        toAdd.forEach(item => {
-                const { originalAmount, originalCurrency } = item;
+    toAdd.forEach(item => {
+        // Avoid leaking recurring item's client-side id into transactions
+        const { id: _recurringId, createdAt: _recCreatedAt, ...clean } = item;
+        const { originalAmount, originalCurrency } = clean;
                 const rate = latestRates[originalCurrency] || 1;
                 const amountInBase = originalAmount / rate;
                 const newTransaction = {
-                    ...item,
+            ...clean,
                     originalAmount: parseFloat(originalAmount),
             // Store as local YYYY-MM-DD string for consistency
             transactionDate: normalizeDateInput(new Date()),
